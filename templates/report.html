@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}Task Reports{% endblock %}
+
+{% block content %}
+<h1 class="text-center mb-4">Task Reports</h1>
+
+<!-- Filter Form -->
+<form method="POST" action="{{ url_for('generate_report') }}" class="mb-3">
+    <div class="row g-3">
+        <!-- Date Range Filter -->
+        <div class="col-md-4">
+            <label for="start_date" class="form-label">Start Date</label>
+            <input type="date" class="form-control" name="start_date" value="{{ start_date }}">
+        </div>
+        <div class="col-md-4">
+            <label for="end_date" class="form-label">End Date</label>
+            <input type="date" class="form-control" name="end_date" value="{{ end_date }}">
+        </div>
+
+        <!-- Username Filter -->
+        <div class="col-md-4">
+            <label for="username" class="form-label">Username</label>
+            <select class="form-select" name="username">
+                <option value="">All Users</option>
+                {% for user in users %}
+                    <option value="{{ user[0] }}" {% if selected_user == user[0] %}selected{% endif %}>{{ user[0] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Submit Button and Export Buttons -->
+        <div class="col-md-12 mt-3 d-flex justify-content-between">
+            <button type="submit" class="btn btn-primary">Generate Report</button>
+            <div>
+                <a href="{{ url_for('export_report_excel', start_date=start_date, end_date=end_date, username=selected_user) }}" class="btn btn-success">Export to Excel</a>
+            </div>
+        </div>
+    </div>
+</form>
+
+<!-- Report Table -->
+<table class="table table-striped table-bordered mt-4">
+    <thead class="table-dark">
+        <tr>
+            <th>Task ID</th>
+            <th>Title</th>
+            <th>Description</th>
+            <th>Task Date</th>
+            <th>Status</th>
+            <th>Assigned User</th>
+            <th>Email</th>
+            <th>Company</th>
+            <th>Branch</th>
+            <th>Section</th>
+            <th>Notes</th>
+            <th>File Path</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for task in tasks %}
+        <tr>
+            <td>{{ task[0] }}</td> <!-- Task ID -->
+            <td>{{ task[1] }}</td> <!-- Title -->
+            <td>{{ task[2] }}</td> <!-- Description -->
+            <td>{{ task[3] }}</td> <!-- Task Date -->
+            <td>{{ task[4] }}</td> <!-- Status -->
+            <td>{{ task[7] }}</td> <!-- Username -->
+            <td>{{ task[8] }}</td> <!-- Email -->
+            <td>{{ task[9] }}</td> <!-- Company -->
+            <td>{{ task[10] }}</td> <!-- Branch -->
+            <td>{{ task[11] }}</td> <!-- Section -->
+            <td>{{ task[5] }}</td> <!-- Notes -->
+            <td>{{ task[6] }}</td> <!-- File Path -->
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

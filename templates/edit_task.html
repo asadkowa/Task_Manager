@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Task{% endblock %}
+
+{% block content %}
+<h1>Edit Task</h1>
+
+<form action="{{ url_for('edit_task', task_id=task_id) }}" method="POST">
+    <div class="mb-3">
+        <label for="title" class="form-label">Task Title</label>
+        <input type="text" name="title" class="form-control" value="{{ task[0] }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="description" class="form-label">Task Description</label>
+        <textarea name="description" class="form-control" required>{{ task[1] }}</textarea>
+    </div>
+    <div class="mb-3">
+        <label for="task_date" class="form-label">Task Date</label>
+        <input type="date" name="task_date" class="form-control" value="{{ task[2] }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="assigned_user" class="form-label">Assign To</label>
+        <select name="assigned_user_id" id="assigned_user" class="form-control" required>
+            {% for user in users %}
+                <option value="{{ user[0] }}" {% if user[0] == task[3] %}selected{% endif %}>
+                    {{ user[1] }} ({{ user[2] }})
+                </option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="mb-3">
+        <label for="status" class="form-label">Status</label>
+        <select name="status" class="form-control">
+            <option value="Pending" {% if task[4] == 'Pending' %}selected{% endif %}>Pending</option>
+            <option value="Completed" {% if task[4] == 'Completed' %}selected{% endif %}>Completed</option>
+        </select>
+    </div>
+    <button type="submit" class="btn btn-primary">Update Task</button>
+</form>
+{% endblock %}

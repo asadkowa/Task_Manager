@@ -1,0 +1,7 @@
+{
+  "title": "Task Title",
+  "start": "2023-09-10",   // Task date
+  "description": "Task Description",
+  "status": "Pending",
+  "email": "assigned_user_email"
+}

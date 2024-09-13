@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Email Settings{% endblock %}
+{% block content %}
+<h1>Email Settings</h1>
+<form method="POST" action="{{ url_for('email_settings') }}">
+    <div class="mb-3">
+        <label for="smtp_server" class="form-label">SMTP Server</label>
+        <input type="text" class="form-control" name="smtp_server" value="{{ smtp_server }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="smtp_port" class="form-label">SMTP Port</label>
+        <input type="number" class="form-control" name="smtp_port" value="{{ smtp_port }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="smtp_user" class="form-label">SMTP Username</label>
+        <input type="text" class="form-control" name="smtp_user" value="{{ smtp_user }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="smtp_password" class="form-label">SMTP Password</label>
+        <input type="password" class="form-control" name="smtp_password" value="{{ smtp_password }}" required>
+    </div>
+    <div class="form-check">
+        <input class="form-check-input" type="checkbox" name="use_tls" id="use_tls" {% if use_tls %}checked{% endif %}>
+        <label class="form-check-label" for="use_tls">Use TLS</label>
+    </div>
+    <button type="submit" class="btn btn-primary mt-3">Save Settings</button>
+</form>
+
+<h2>Test Email Settings</h2>
+<form method="POST" action="{{ url_for('test_email') }}">
+    <div class="mb-3">
+        <label for="test_email" class="form-label">Test Email Address</label>
+        <input type="email" class="form-control" name="test_email" required>
+    </div>
+    <button type="submit" class="btn btn-success mt-3">Send Test Email</button>
+</form>
+{% endblock %}

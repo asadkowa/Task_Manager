@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Database Settings{% endblock %}
+{% block content %}
+<h1>Database Settings</h1>
+<form method="POST" action="{{ url_for('database_settings') }}">
+    <div class="mb-3">
+        <label for="db_host" class="form-label">Database Host</label>
+        <input type="text" class="form-control" name="db_host" value="{{ db_host }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="db_port" class="form-label">Database Port</label>
+        <input type="number" class="form-control" name="db_port" value="{{ db_port }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="db_user" class="form-label">Database Username</label>
+        <input type="text" class="form-control" name="db_user" value="{{ db_user }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="db_password" class="form-label">Database Password</label>
+        <input type="password" class="form-control" name="db_password" value="{{ db_password }}" required>
+    </div>
+    <div class="mb-3">
+        <label for="db_name" class="form-label">Database Name</label>
+        <input type="text" class="form-control" name="db_name" value="{{ db_name }}" required>
+    </div>
+    <button type="submit" class="btn btn-primary mt-3">Save Settings</button>
+</form>
+
+<h2>Test Database Connection</h2>
+<form method="POST" action="{{ url_for('test_database') }}">
+    <button type="submit" class="btn btn-success mt-3">Test Connection</button>
+</form>
+{% endblock %}

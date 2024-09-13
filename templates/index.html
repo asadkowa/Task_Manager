@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+
+{% block title %}Your Tasks{% endblock %}
+
+{% block content %}
+
+    <h1 class="text-center mb-4">Your Tasks</h1>
+
+    <!-- Add New Task Button -->
+    <div class="d-flex justify-content-between mb-3">
+        <a href="{{ url_for('add_task') }}" class="btn btn-success">Add New Task</a>
+    </div>
+
+    <!-- Modernized Task Table with Infinite Scroll Container -->
+    <div id="task-container" class="task-container mb-5">
+        <table class="table table-hover table-striped rounded shadow-sm">
+            <thead class="table-dark">
+                <tr>
+                    <th>Task Title</th>
+                    <th>Description</th>
+                    <th>Status</th>
+                    <th>Task Date</th>
+                    <th>Assigned To</th> <!-- Assigned user -->
+                    <th>Actions</th> <!-- Dropdown for actions -->
+                </tr>
+            </thead>
+            <tbody id="task-list">
+                <!-- Tasks will be dynamically loaded here -->
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Loading Spinner for Infinite Scroll -->
+    <div id="loading" class="text-center" style="display:none;">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <h1 class="text-center mt-5">Your Tasks Calendar</h1>
+
+    <!-- Calendar Container with Custom Size -->
+    <div id="calendar-container" class="calendar-container">
+        <div id="calendar"></div>
+    </div>
+
+    <!-- Modal to Show Full Task Info -->
+    <div class="modal fade" id="taskInfoModal" tabindex="-1" aria-labelledby="taskInfoModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="taskInfoModalLabel">Task Information</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="task-info-content">
+                    <!-- Task details will be injected here dynamically -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- FullCalendar CSS and JS -->
+    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.10.1/main.min.css' rel='stylesheet' />
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.10.1/main.min.js'></script>
+    <script src='https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@5.10.1/main.global.min.js'></script>
+
+    <!-- Bootstrap JS and Popper.js (required for tooltips) -->
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.10.2/dist/umd/popper.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+
+
+    <!-- Task Information Modal -->
+    <div class="modal fade" id="taskInfoModal" tabindex="-1" aria-labelledby="taskInfoModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="taskInfoModalLabel">Task Information</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="task-info-content">
+                    <!-- Task details will be dynamically injected here -->
+                    <p>Loading task information...</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        // Variables to manage pagination and fetching
+        let currentPage = 1;
+        let isLoading = false;
+
+        // Function to fetch tasks from the server
+        function fetchTasks() {
+            if (isLoading) return;
+            isLoading = true;
+
+            // Show loading spinner
+            document.getElementById('loading').style.display = 'block';
+
+            fetch(`/tasks_json?page=${currentPage}`)
+                .then(response => response.json())
+                .then(data => {
+                    const taskList = document.getElementById('task-list');
+
+                    // Append each task to the task table
+                    data.tasks.forEach(task => {
+                        taskList.innerHTML += `
+                            <tr>
+                                <td>${task.title}</td>
+                                <td>${task.description}</td>
+                                <td>${task.status === 'Completed' ? '<span class="badge bg-success">Completed</span>' : '<span class="badge bg-warning">Pending</span>'}</td>
+                                <td>${task.task_date}</td>
+                                <td>${task.assigned_to}</td>
+                                <td>
+                                    <div class="dropdown">
+                                        <button class="btn btn-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">Actions</button>
+                                        <ul class="dropdown-menu">
+                                            <li><a class="dropdown-item" href="/edit_task/${task.id}">Edit</a></li>
+                                            ${task.status === 'Pending' ? `
+                                            <li>
+                                                <form action="/complete_task/${task.id}" method="POST">
+                                                    <button type="submit" class="dropdown-item">Mark as Completed</button>
+                                                </form>
+                                            </li>` : ''}
+                                            <li>
+                                                <form action="/delete_task/${task.id}" method="POST">
+                                                    <button type="submit" class="dropdown-item text-danger">Delete</button>
+                                                </form>
+                                            </li>
+                                            <!-- Button to Show Full Task Info -->
+                                            <li>
+                                                <button class="dropdown-item" onclick="showTaskInfo(${task.id})" data-bs-toggle="modal" data-bs-target="#taskInfoModal">View Full Info</button>
+                                            </li>
+                                        </ul>
+                                    </div>
+                                </td>
+                            </tr>`;
+                    });
+
+                    // Hide loading spinner
+                    document.getElementById('loading').style.display = 'none';
+
+                    // Increment page count for the next fetch
+                    currentPage += 1;
+                    isLoading = false;
+                })
+                .catch(error => {
+                    console.error('Error fetching tasks:', error);
+                    isLoading = false;
+                });
+        }
+        // Function to show full task information in the modal
+        function showTaskInfo(taskId) {
+            // Fetch the full task info from the server (this route should be implemented in Flask)
+            fetch(`/get_task_info/${taskId}`)
+                .then(response => response.json())
+                .then(task => {
+                    // Inject the task information into the modal content
+                    const taskInfoContent = document.getElementById('task-info-content');
+                    taskInfoContent.innerHTML = `
+                        <p><strong>Title:</strong> ${task.title}</p>
+                        <p><strong>Description:</strong> ${task.description}</p>
+                        <p><strong>Status:</strong> ${task.status}</p>
+                        <p><strong>Task Date:</strong> ${task.task_date}</p>
+                        <p><strong>Assigned To:</strong> ${task.assigned_to}</p>
+                        <p><strong>Notes:</strong> ${task.notes}</p>
+                        <p><strong>File:</strong> ${task.file_path ? '<a href="/uploads/' + task.file_path + '" target="_blank">Download</a>' : 'No file attached'}</p>
+                    `;
+                })
+                .catch(error => {
+                    console.error('Error fetching task info:', error);
+                    const taskInfoContent = document.getElementById('task-info-content');
+                    taskInfoContent.innerHTML = `<p>Error loading task information.</p>`;
+                });
+        }
+
+
+
+        // Infinite Scroll using Intersection Observer API
+        const observer = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    fetchTasks(); // Load more tasks when the spinner becomes visible
+                }
+            });
+        }, {
+            root: null, // Use the browser viewport as root
+            rootMargin: '0px',
+            threshold: 1.0
+        });
+
+        // Observe the loading spinner to detect when user scrolls to the bottom
+        observer.observe(document.getElementById('loading'));
+
+        // Initial task fetch when the page loads
+        fetchTasks();
+
+        document.addEventListener('DOMContentLoaded', function() {
+            var calendarEl = document.getElementById('calendar');
+            var calendar = new FullCalendar.Calendar(calendarEl, {
+                initialView: 'dayGridMonth',  // Monthly view
+                selectable: true,             // Allows selection of dates for new tasks
+                events: '/tasks_json',        // Load tasks from your Flask app as JSON
+
+                // Modern toolbar layout
+                headerToolbar: {
+                    left: 'prev,next today',
+                    center: 'title',
+                    right: 'dayGridMonth,timeGridWeek,timeGridDay'
+                },
+
+                // Handle clicking on a date to create a new task
+                dateClick: function(info) {
+                    var selectedDate = info.dateStr;  // The clicked date in "YYYY-MM-DD" format
+                    window.location.href = "/add_task?date=" + selectedDate;  // Redirect to add task form
+                },
+
+                eventClick: function(info) {
+                    var eventObj = info.event;
+                    if (confirm('Do you want to edit this task?')) {
+                        // Redirect to edit task page
+                        window.location.href = "/edit_task/" + eventObj.id;
+                    }
+                },
+                eventDidMount: function(info) {
+                    // Initialize Bootstrap Tooltip on each event
+                    var tooltip = new bootstrap.Tooltip(info.el, {
+                        title: '<strong>Description:</strong> ' + info.event.extendedProps.description + '<br>' +
+                               '<strong>Status:</strong> ' + info.event.extendedProps.status + '<br>' +
+                               '<strong>Email:</strong> ' + info.event.extendedProps.email,
+                        placement: 'top', // Tooltip position
+                        trigger: 'hover', // Trigger tooltip on hover
+                        html: true        // Allow HTML content
+                    });
+                }
+            });
+
+            calendar.render();  // Render the FullCalendar
+        });
+
+    </script>
+
+    <!-- Custom CSS to style the table and calendar -->
+    <style>
+        .task-container {
+            max-width: 100%;
+            margin: 0 auto;
+            overflow-y: auto;
+            max-height: 600px;
+        }
+
+        table {
+            border-collapse: separate;
+            border-spacing: 0 10px;
+        }
+
+        table tbody tr {
+            background-color: white;
+            border-radius: 8px;
+        }
+
+        table tbody tr td {
+            padding: 15px 10px;
+        }
+
+        /* Table Header Styles */
+        .table-dark {
+            background-color: #343a40;
+            color: white;
+            text-align: center;
+        }
+
+        /* Spinner for loading more tasks */
+        #loading {
+            margin-top: 10px;
+        }
+
+        /* Medium size for calendar */
+        .calendar-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            background-color: #ffffff;
+        }
+
+        #calendar {
+            max-width: 100%;
+            height: 600px;
+        }
+
+        /* Modern and clean look */
+        .fc-toolbar {
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+
+        .fc-event {
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+    </style>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Sections{% endblock %}
+
+{% block content %}
+<h1>Manage Sections</h1>
+
+<form action="{{ url_for('manage_sections') }}" method="POST" class="mb-3">
+    <div class="input-group mb-3">
+        <input type="text" name="name" class="form-control" placeholder="Add new section" required>
+        <select name="branch_id" class="form-select" required>
+            <option value="">Select Branch</option>
+            {% for branch in branches %}
+                <option value="{{ branch[0] }}">{{ branch[1] }}</option>
+            {% endfor %}
+        </select>
+        <button class="btn btn-success" type="submit">Add</button>
+    </div>
+</form>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Section Name</th>
+            <th>Branch</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for section in sections %}
+        <tr>
+            <td>{{ section[1] }}</td>
+            <td>{{ section[2] }}</td>
+            <td>
+                <a href="{{ url_for('edit_section', section_id=section[0]) }}" class="btn btn-primary btn-sm">Edit</a>
+                <form action="{{ url_for('delete_section', section_id=section[0]) }}" method="POST" class="d-inline">
+                    <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
