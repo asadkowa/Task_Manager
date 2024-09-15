@@ -6,9 +6,11 @@ from werkzeug.utils import secure_filename
 import csv
 from io import StringIO
 import pandas as pd
-import pdfkit
+#import pdfkit
 import smtplib
 import MySQLdb
+from datetime import timedelta
+
 
 
 
@@ -230,18 +232,44 @@ def fetch_notifications():
     return jsonify(notifications_list)
 
 #Notification as read
-@app.route('/mark_notification_read/<int:notification_id>', methods=['GET'])
-def mark_notification_read(notification_id):
+@app.route('/notifications/mark_read/<int:notification_id>', methods=['POST', 'GET'])
+def mark_notification_as_read(notification_id):
     if 'user_id' not in session:
+        flash("Please log in to view your notifications.")
         return redirect(url_for('login'))
 
     user_id = session['user_id']
+
     cur = mysql.connection.cursor()
-    cur.execute("UPDATE notifications SET is_read = 1 WHERE id = %s AND user_id = %s", (notification_id, user_id))
+    cur.execute("""
+        UPDATE notifications
+        SET is_read = TRUE
+        WHERE id = %s AND user_id = %s
+    """, (notification_id, user_id))
+
     mysql.connection.commit()
     cur.close()
 
-    return redirect(url_for('index'))  # Redirect after marking the notification as read
+    flash("Notification marked as read.")
+    return redirect(url_for('notifications'))
+
+
+### Route to unread count
+@app.context_processor
+def inject_unread_notifications():
+    if 'user_id' in session:
+        cur = mysql.connection.cursor()
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM notifications
+            WHERE user_id = %s AND is_read = FALSE
+        """, [session['user_id']])
+
+        unread_notifications = cur.fetchone()[0]
+        cur.close()
+        return dict(unread_notifications=unread_notifications)
+    return dict(unread_notifications=0)
+
 
 #route to get info button
 @app.route('/get_task_info/<int:task_id>', methods=['GET'])
@@ -352,8 +380,18 @@ def add_task():
         branch_id = request.form.get('branch_id')
         section_id = request.form.get('section_id')
         assigned_user_id = request.form.get('assigned_user_id')
+        assigned_group_id = request.form.get('assigned_group_id')  # Added for group assignment
         notes = request.form.get('notes')
         user_id = session['user_id']
+
+        # Ensure either user or group is assigned, but not both
+        if not assigned_user_id and not assigned_group_id:
+            flash("Please assign the task to either a user or a group.")
+            return redirect(url_for('add_task'))
+
+        if assigned_user_id and assigned_group_id:
+            flash("Please assign the task to only one: either a user or a group, not both.")
+            return redirect(url_for('add_task'))
 
         # File upload handling
         file = request.files.get('file')
@@ -366,23 +404,30 @@ def add_task():
         # Insert task into the database
         cur = mysql.connection.cursor()
         cur.execute("""
-            INSERT INTO tasks (title, description, task_date, company_id, branch_id, section_id, file_path, assigned_user_id, notes, user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO tasks (title, description, task_date, company_id, branch_id, section_id, file_path, assigned_user_id, assigned_group_id, notes, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
-        title, description, task_date, company_id, branch_id, section_id, file_path, assigned_user_id, notes, user_id))
+            title, description, task_date, company_id, branch_id, section_id, file_path,
+            assigned_user_id if assigned_user_id else None,
+            assigned_group_id if assigned_group_id else None,
+            notes, user_id
+        ))
 
         task_id = cur.lastrowid  # Get the ID of the newly created task
         mysql.connection.commit()
 
-        # Notify the assigned user
-        notify_task_assignment(task_id, assigned_user_id)
+        # Notify the assigned user or group
+        if assigned_user_id:
+            notify_task_assignment(task_id, assigned_user_id)
+        elif assigned_group_id:
+            notify_group_assignment(task_id, assigned_group_id)
 
         cur.close()
 
         flash("Task added successfully!")
         return redirect(url_for('index'))
 
-    # Fetch companies and users for dropdowns
+    # Fetch companies, users, and groups for dropdowns
     cur = mysql.connection.cursor()
 
     # Fetch companies
@@ -393,11 +438,45 @@ def add_task():
     cur.execute("SELECT id, username, email FROM users")
     users = cur.fetchall()
 
+    # Fetch groups
+    cur.execute("SELECT id, name FROM groupss")
+    groups = cur.fetchall()
+
     cur.close()
 
-    return render_template('add_task.html', companies=companies, users=users)
+    return render_template('add_task.html', companies=companies, users=users, groups=groups)
 
+# Route to group notification
+def notify_group_assignment(task_id, group_id):
+    # Fetch all users in the specified group
+    cur = mysql.connection.cursor()
 
+    # Get the users associated with the group
+    cur.execute("""
+        SELECT users.id, users.username
+        FROM users
+        JOIN user_groups ON users.id = user_groups.user_id
+        WHERE user_groups.group_id = %s
+    """, [group_id])
+
+    users_in_group = cur.fetchall()
+
+    # Iterate over users in the group and create notifications
+    for user in users_in_group:
+        user_id = user[0]
+        username = user[1]
+
+        # Craft the notification message
+        message = f"A new task (ID: {task_id}) has been assigned to your group."
+
+        # Insert the notification into the notifications table
+        cur.execute("""
+            INSERT INTO notifications (user_id, message)
+            VALUES (%s, %s)
+        """, (user_id, message))
+
+    mysql.connection.commit()
+    cur.close()
 
 
 # Route to get branches based on the selected company
@@ -560,16 +639,152 @@ def login():
 @app.route('/notifications')
 def notifications():
     if 'user_id' not in session:
-        flash("Please log in to view notifications.")
+        flash("Please log in to view your notifications.")
         return redirect(url_for('login'))
 
+    user_id = session['user_id']
+
+    # Fetch notifications for the logged-in user
     cur = mysql.connection.cursor()
-    # Fetch unread notifications for the current user
-    cur.execute("SELECT message FROM notifications WHERE user_id = %s AND is_read = 0", (session['user_id'],))
+    cur.execute("""
+        SELECT id, message, is_read, created_at
+        FROM notifications
+        WHERE user_id = %s
+        ORDER BY created_at DESC
+    """, [user_id])
+
     notifications = cur.fetchall()
     cur.close()
 
-    return jsonify(notifications)
+    return render_template('notifications.html', notifications=notifications)
+
+#Route Setting users Groups
+@app.route('/settings/groups', methods=['GET', 'POST'])
+def manage_groups():
+    if 'user_id' not in session or not session['is_admin']:
+        flash("Unauthorized access.")
+        return redirect(url_for('index'))
+
+    cur = mysql.connection.cursor()
+
+    # Create a new group if the form is submitted
+    if request.method == 'POST':
+        group_name = request.form['group_name']
+        cur.execute("INSERT INTO groupss (name) VALUES (%s)", [group_name])
+        mysql.connection.commit()
+        flash("Group created successfully!")
+
+    # Fetch all groups with their users
+    cur.execute("""
+        SELECT g.id AS group_id, g.name AS group_name, u.id AS user_id, u.username AS user_name
+        FROM groupss g
+        LEFT JOIN user_groups ug ON g.id = ug.group_id
+        LEFT JOIN users u ON u.id = ug.user_id
+        ORDER BY g.name
+    """)
+    groups_data = cur.fetchall()
+
+    # Organize groups and their users in a dictionary
+    groups = {}
+    for group_id, group_name, user_id, user_name in groups_data:
+        if group_id not in groups:
+            groups[group_id] = {
+                'name': group_name,
+                'users': []
+            }
+        if user_id:
+            groups[group_id]['users'].append({'id': user_id, 'name': user_name})
+
+    # Fetch all users for the "add user to group" dropdown
+    cur.execute("SELECT id, username FROM users")
+    users = cur.fetchall()
+
+    cur.close()
+
+    return render_template('manage_groups.html', groups=groups, users=users)
+
+
+### Route to all notification has been read
+@app.route('/notifications/mark_all_read', methods=['POST'])
+def mark_all_notifications_as_read():
+    if 'user_id' not in session:
+        flash("Please log in to view your notifications.")
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+
+    cur = mysql.connection.cursor()
+    cur.execute("""
+        UPDATE notifications
+        SET is_read = TRUE
+        WHERE user_id = %s
+    """, (user_id,))
+
+    mysql.connection.commit()
+    cur.close()
+
+    flash("All notifications marked as read.")
+    return redirect(url_for('notifications'))
+
+
+# Route to edit group
+@app.route('/settings/groups/edit/<int:group_id>', methods=['GET', 'POST'])
+def edit_group(group_id):
+    if 'user_id' not in session or not session['is_admin']:
+        flash("Unauthorized access.")
+        return redirect(url_for('index'))
+
+    cur = mysql.connection.cursor()
+
+    if request.method == 'POST':
+        group_name = request.form['group_name']
+        cur.execute("UPDATE groupss SET name = %s WHERE id = %s", [group_name, group_id])
+        mysql.connection.commit()
+        cur.close()
+        flash("Group updated successfully!")
+        return redirect(url_for('manage_groups'))
+
+    # Fetch the group name to populate the form
+    cur.execute("SELECT name FROM groupss WHERE id = %s", [group_id])
+    group = cur.fetchone()
+    cur.close()
+
+    return render_template('edit_group.html', group=group, group_id=group_id)
+
+
+#Route to delete group
+@app.route('/settings/groups/delete/<int:group_id>', methods=['POST'])
+def delete_group(group_id):
+    if 'user_id' not in session or not session['is_admin']:
+        flash("Unauthorized access.")
+        return redirect(url_for('index'))
+
+    cur = mysql.connection.cursor()
+    cur.execute("DELETE FROM groupss WHERE id = %s", [group_id])
+    mysql.connection.commit()
+    cur.close()
+
+    flash("Group deleted successfully!")
+    return redirect(url_for('manage_groups'))
+
+
+# Route to add a user to a group
+@app.route('/settings/groups/add_user', methods=['POST'])
+def add_user_to_group():
+    if 'user_id' not in session or not session['is_admin']:
+        flash("Unauthorized access.")
+        return redirect(url_for('index'))
+
+    user_id = request.form['user_id']
+    group_id = request.form['group_id']
+
+    cur = mysql.connection.cursor()
+    cur.execute("INSERT INTO user_groups (user_id, group_id) VALUES (%s, %s)", [user_id, group_id])
+    mysql.connection.commit()
+    cur.close()
+
+    flash("User added to group successfully!")
+    return redirect(url_for('manage_groups'))
 
 #User profile
 @app.route('/profile')
@@ -813,6 +1028,9 @@ def generate_report():
     start_date = request.form.get('start_date', '')
     end_date = request.form.get('end_date', '')
     username = request.form.get('username', '')
+    company_id = request.form.get('company_id', '')
+    branch_id = request.form.get('branch_id', '')
+    section_id = request.form.get('section_id', '')
 
     # SQL query with optional filters
     query = """
@@ -839,6 +1057,21 @@ def generate_report():
         query += " AND users.username = %s"
         filters.append(username)
 
+    # Filter by company
+    if company_id:
+        query += " AND tasks.company_id = %s"
+        filters.append(company_id)
+
+    # Filter by branch
+    if branch_id:
+        query += " AND tasks.branch_id = %s"
+        filters.append(branch_id)
+
+    # Filter by section
+    if section_id:
+        query += " AND tasks.section_id = %s"
+        filters.append(section_id)
+
     # Execute the query
     cur.execute(query, filters)
     tasks = cur.fetchall()
@@ -847,9 +1080,23 @@ def generate_report():
     cur.execute("SELECT username FROM users")
     users = cur.fetchall()
 
+    # Fetch all companies for filter dropdown
+    cur.execute("SELECT id, name FROM companies")
+    companies = cur.fetchall()
+
+    # Fetch all branches for filter dropdown
+    cur.execute("SELECT id, name FROM branches")
+    branches = cur.fetchall()
+
+    # Fetch all sections for filter dropdown
+    cur.execute("SELECT id, name FROM sections")
+    sections = cur.fetchall()
+
     cur.close()
 
-    return render_template('report.html', tasks=tasks, users=users, start_date=start_date, end_date=end_date, selected_user=username)
+    return render_template('report.html', tasks=tasks, users=users, companies=companies, branches=branches, sections=sections,
+                           start_date=start_date, end_date=end_date, selected_user=username,
+                           selected_company=company_id, selected_branch=branch_id, selected_section=section_id)
 
 ###Export to excel
 @app.route('/export_report_excel', methods=['GET'])
@@ -1047,6 +1294,15 @@ def edit_user(user_id):
     cur.close()
     return render_template('edit_user.html', user=user)
 
+## Route to error pages
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template('404.html'), 404
 
+@app.errorhandler(500)
+def internal_server_error(e):
+    return render_template('500.html'), 500
+
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 if __name__ == '__main__':
     app.run(debug=True)

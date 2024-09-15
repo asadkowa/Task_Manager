@@ -29,11 +29,44 @@
             </select>
         </div>
 
+        <!-- Company Filter -->
+        <div class="col-md-4">
+            <label for="company" class="form-label">Company</label>
+            <select class="form-select" name="company_id">
+                <option value="">All Companies</option>
+                {% for company in companies %}
+                    <option value="{{ company[0] }}" {% if selected_company == company[0] %}selected{% endif %}>{{ company[1] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Branch Filter -->
+        <div class="col-md-4">
+            <label for="branch" class="form-label">Branch</label>
+            <select class="form-select" name="branch_id">
+                <option value="">All Branches</option>
+                {% for branch in branches %}
+                    <option value="{{ branch[0] }}" {% if selected_branch == branch[0] %}selected{% endif %}>{{ branch[1] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Section Filter -->
+        <div class="col-md-4">
+            <label for="section" class="form-label">Section</label>
+            <select class="form-select" name="section_id">
+                <option value="">All Sections</option>
+                {% for section in sections %}
+                    <option value="{{ section[0] }}" {% if selected_section == section[0] %}selected{% endif %}>{{ section[1] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
         <!-- Submit Button and Export Buttons -->
         <div class="col-md-12 mt-3 d-flex justify-content-between">
             <button type="submit" class="btn btn-primary">Generate Report</button>
             <div>
-                <a href="{{ url_for('export_report_excel', start_date=start_date, end_date=end_date, username=selected_user) }}" class="btn btn-success">Export to Excel</a>
+                <a href="{{ url_for('export_report_excel', start_date=start_date, end_date=end_date, username=selected_user, company_id=selected_company, branch_id=selected_branch, section_id=selected_section) }}" class="btn btn-success">Export to Excel</a>
             </div>
         </div>
     </div>

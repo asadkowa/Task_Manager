@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Notifications{% endblock %}
+
+{% block content %}
+<h1>Your Notifications</h1>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Message</th>
+            <th>Status</th>
+            <th>Date</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for notification in notifications %}
+        <tr>
+            <td>{{ notification[1] }}</td> <!-- Message -->
+            <td>{{ 'Read' if notification[2] else 'Unread' }}</td> <!-- is_read -->
+            <td>{{ notification[3] }}</td> <!-- created_at -->
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% endblock %}

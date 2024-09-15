@@ -11,5 +11,8 @@
     <a href="{{ url_for('manage_users') }}" class="list-group-item list-group-item-action">Manage Users</a>
     <a href="{{ url_for('email_settings') }}" class="list-group-item list-group-item-action">Manage Email</a>
     <a href="{{ url_for('database_settings') }}" class="list-group-item list-group-item-action">Manage Database</a>
+    <li class="list-group-item">
+        <a href="{{ url_for('manage_groups') }}">Manage Groups</a> <!-- New link for group management -->
+    </li>
 </div>
 {% endblock %}
