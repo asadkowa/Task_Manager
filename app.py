@@ -1,21 +1,44 @@
 from flask_mysqldb import MySQL
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file
+from flask import (Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file,
+                   send_from_directory, abort, Response)
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
+import uuid
 from werkzeug.utils import secure_filename
 import csv
-from io import StringIO
+from io import StringIO, BytesIO
 import pandas as pd
-#import pdfkit
 import smtplib
 import MySQLdb
-from datetime import timedelta
+from datetime import timedelta, date
 
+# Load settings from a local .env file if python-dotenv is installed
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
+# PDF export is optional: it needs the pdfkit package and the wkhtmltopdf program
+try:
+    import pdfkit
+except ImportError:
+    pdfkit = None
 
 
 app = Flask(__name__)
-app.secret_key = "supersecretkey"
+app.secret_key = os.environ.get('SECRET_KEY') or os.urandom(24)
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
+
+# Task priority levels, most important first
+PRIORITIES = ['Urgent', 'High', 'Medium', 'Low']
+DEFAULT_PRIORITY = 'Medium'
+PRIORITY_COLORS = {'Urgent': 'danger', 'High': 'warning', 'Medium': 'primary', 'Low': 'secondary'}
+PRIORITY_ORDER_SQL = "FIELD(tasks.priority, 'Urgent', 'High', 'Medium', 'Low')"
+
+
+def clean_priority(value):
+    return value if value in PRIORITIES else DEFAULT_PRIORITY
 
 # Function to switch language
 @app.route('/switch_language/<language>')
@@ -29,22 +52,52 @@ def get_language():
 
 
 
-# MySQL Configurations
-app.config['MYSQL_HOST'] = 'localhost'
-app.config['MYSQL_USER'] = 'root'
-app.config['MYSQL_PASSWORD'] = '4626284400Ilu@@'
-app.config['MYSQL_DB'] = 'task_management'
+@app.context_processor
+def inject_globals():
+    return dict(lang=get_language(), priorities=PRIORITIES, priority_colors=PRIORITY_COLORS)
+
+
+# MySQL Configurations (set these in the environment or in a .env file)
+app.config['MYSQL_HOST'] = os.environ.get('MYSQL_HOST', 'localhost')
+app.config['MYSQL_PORT'] = int(os.environ.get('MYSQL_PORT', 3306))
+app.config['MYSQL_USER'] = os.environ.get('MYSQL_USER', 'root')
+app.config['MYSQL_PASSWORD'] = os.environ.get('MYSQL_PASSWORD', '')
+app.config['MYSQL_DB'] = os.environ.get('MYSQL_DB', 'task_management')
 
 mysql = MySQL(app)
 
-# Path to store uploaded files
+# Uploaded files are saved in UPLOAD_DIR; the database stores them as "uploads/<name>"
 UPLOAD_FOLDER = 'uploads/'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+UPLOAD_DIR = os.path.join(app.root_path, 'uploads')
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def is_admin():
+    return 'user_id' in session and bool(session.get('is_admin'))
+
+
+# SQL condition for tasks the logged-in user may see: created by them, assigned to them, or to one of their groups
+TASK_VISIBLE_SQL = """(tasks.user_id = %s OR tasks.assigned_user_id = %s
+    OR tasks.assigned_group_id IN (SELECT group_id FROM user_groups WHERE user_id = %s))"""
+
+
+def visible_task_filter():
+    """Returns (sql, params) restricting tasks to those the current user may see. Admins see all tasks."""
+    if is_admin():
+        return "1=1", []
+    user_id = session['user_id']
+    return TASK_VISIBLE_SQL, [user_id, user_id, user_id]
+
+
+def can_access_task(cur, task_id):
+    condition, params = visible_task_filter()
+    cur.execute(f"SELECT 1 FROM tasks WHERE id = %s AND {condition}", [task_id] + params)
+    return cur.fetchone() is not None
 
 
 # Insert notification when assigning a task to a user
-def notify_task_assignment(task_id, assigned_user_id):
-    message = "You have been assigned a new task."
+def notify_task_assignment(task_id, assigned_user_id, priority=DEFAULT_PRIORITY):
+    message = f"You have been assigned a new {priority} priority task."
     cur = mysql.connection.cursor()
     cur.execute("INSERT INTO notifications (user_id, task_id, message) VALUES (%s, %s, %s)",
                 (assigned_user_id, task_id, message))
@@ -108,6 +161,10 @@ def database_settings():
 # Route to test the database connection
 @app.route('/settings/test_database', methods=['POST'])
 def test_database():
+    if not is_admin():
+        flash("Unauthorized access.")
+        return redirect(url_for('index'))
+
     db_host = request.form.get('db_host')
     db_port = request.form.get('db_port')
     db_user = request.form.get('db_user')
@@ -127,6 +184,10 @@ def test_database():
 ##Send Test Email
 @app.route('/settings/test_email', methods=['POST'])
 def test_email():
+    if not is_admin():
+        flash("Unauthorized access.")
+        return redirect(url_for('index'))
+
     smtp_server = request.form.get('smtp_server')
     smtp_port = request.form.get('smtp_port')
     smtp_user = request.form.get('smtp_user')
@@ -136,7 +197,7 @@ def test_email():
 
     try:
         # Step 1: Establish connection to the SMTP server
-        server = smtplib.SMTP(smtp_server, smtp_port)
+        server = smtplib.SMTP(smtp_server, int(smtp_port))
 
         # Step 2: Start TLS if required
         if use_tls:
@@ -258,47 +319,82 @@ def mark_notification_as_read(notification_id):
 @app.context_processor
 def inject_unread_notifications():
     if 'user_id' in session:
-        cur = mysql.connection.cursor()
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM notifications
-            WHERE user_id = %s AND is_read = FALSE
-        """, [session['user_id']])
+        try:
+            cur = mysql.connection.cursor()
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM notifications
+                WHERE user_id = %s AND is_read = FALSE
+            """, [session['user_id']])
 
-        unread_notifications = cur.fetchone()[0]
-        cur.close()
-        return dict(unread_notifications=unread_notifications)
+            unread_notifications = cur.fetchone()[0]
+            cur.close()
+            return dict(unread_notifications=unread_notifications)
+        except MySQLdb.Error:
+            # Keep error pages renderable when the database is unavailable
+            pass
     return dict(unread_notifications=0)
+
+
+# Name shown for a task's assignee: the user, or the group
+ASSIGNED_TO_SQL = """COALESCE((SELECT username FROM users WHERE id = tasks.assigned_user_id),
+                              (SELECT name FROM groupss WHERE id = tasks.assigned_group_id))"""
+
+
+def format_date(value):
+    return value.strftime('%Y-%m-%d') if value else None
 
 
 #route to get info button
 @app.route('/get_task_info/<int:task_id>', methods=['GET'])
 def get_task_info(task_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 403
+
     # Query the database for the task details
     cur = mysql.connection.cursor()
-    cur.execute("""
-        SELECT title, description, status, task_date, 
-               (SELECT username FROM users WHERE id = tasks.assigned_user_id) as assigned_to, 
-               notes, file_path 
+    if not can_access_task(cur, task_id):
+        cur.close()
+        return jsonify({'error': 'Task not found'}), 404
+
+    cur.execute(f"""
+        SELECT title, description, status, task_date, {ASSIGNED_TO_SQL} as assigned_to,
+               notes, file_path, priority
         FROM tasks WHERE id = %s
     """, (task_id,))
     task = cur.fetchone()
     cur.close()
 
-    if task:
-        # Format task data as a JSON response
-        task_data = {
-            'title': task[0],
-            'description': task[1],
-            'status': task[2],
-            'task_date': task[3].strftime('%Y-%m-%d'),
-            'assigned_to': task[4],
-            'notes': task[5],
-            'file_path': task[6]
-        }
-        return jsonify(task_data)
-    else:
-        return jsonify({'error': 'Task not found'}), 404
+    # Format task data as a JSON response
+    file_path = task[6]
+    task_data = {
+        'title': task[0],
+        'description': task[1],
+        'status': task[2],
+        'task_date': format_date(task[3]),
+        'assigned_to': task[4],
+        'notes': task[5],
+        'file_url': url_for('uploaded_file', filename=os.path.basename(file_path)) if file_path else None,
+        'priority': task[7]
+    }
+    return jsonify(task_data)
+
+
+# Serve an attached file to users who can see the task it belongs to
+@app.route('/uploads/<path:filename>')
+def uploaded_file(filename):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    condition, params = visible_task_filter()
+    cur = mysql.connection.cursor()
+    cur.execute(f"SELECT 1 FROM tasks WHERE file_path = %s AND {condition}", [UPLOAD_FOLDER + filename] + params)
+    allowed = cur.fetchone() is not None
+    cur.close()
+
+    if not allowed:
+        abort(404)
+    return send_from_directory(UPLOAD_DIR, filename)
 
 
 # Home route to display all tasks
@@ -308,26 +404,10 @@ def index():
         flash("Please log in to view your tasks.")
         return redirect(url_for('login'))
 
-    user_id = session['user_id']
-    cur = mysql.connection.cursor()
+    # Tasks and calendar events are loaded by the page from /tasks_json and /calendar_events
+    return render_template('index.html')
 
-    # Pagination variables
-    page = request.args.get('page', 1, type=int)
-    per_page = 5  # Number of tasks per page
-    offset = (page - 1) * per_page
-
-    cur.execute("SELECT * FROM tasks WHERE user_id = %s LIMIT %s OFFSET %s", (user_id, per_page, offset))
-    tasks = cur.fetchall()
-
-    # Fetch total count of tasks for pagination
-    cur.execute("SELECT COUNT(*) FROM tasks WHERE user_id = %s", [user_id])
-    total_tasks = cur.fetchone()[0]
-
-    cur.close()
-
-    return render_template('index.html', tasks=tasks, page=page, total_pages=(total_tasks + per_page - 1) // per_page)
-
-###Calendar route###
+### Task list route (used by the infinite scroll on the home page) ###
 @app.route('/tasks_json', methods=['GET'])
 def tasks_json():
     if 'user_id' not in session:
@@ -335,20 +415,25 @@ def tasks_json():
 
     user_id = session['user_id']
     page = request.args.get('page', 1, type=int)
+    priority = request.args.get('priority', '')
     per_page = 10  # Number of tasks per page
     offset = (page - 1) * per_page
 
-    cur = mysql.connection.cursor()
-
-    # Fetch tasks assigned to the user
-    cur.execute("""
-        SELECT id, title, description, status, task_date, 
-               (SELECT username FROM users WHERE id = tasks.assigned_user_id) as assigned_to 
+    # Tasks the user created, or that are assigned to them or their groups
+    query = f"""
+        SELECT id, title, description, status, task_date, {ASSIGNED_TO_SQL} as assigned_to, priority
         FROM tasks
-        WHERE user_id = %s OR assigned_user_id = %s
-        LIMIT %s OFFSET %s
-    """, (user_id, user_id, per_page, offset))
+        WHERE {TASK_VISIBLE_SQL}
+    """
+    params = [user_id, user_id, user_id]
+    if priority in PRIORITIES:
+        query += " AND tasks.priority = %s"
+        params.append(priority)
+    query += f" ORDER BY {PRIORITY_ORDER_SQL}, tasks.task_date LIMIT %s OFFSET %s"
+    params += [per_page, offset]
 
+    cur = mysql.connection.cursor()
+    cur.execute(query, params)
     tasks = cur.fetchall()
     cur.close()
 
@@ -358,11 +443,55 @@ def tasks_json():
         'title': task[1],
         'description': task[2],
         'status': task[3],
-        'task_date': task[4].strftime('%Y-%m-%d'),
-        'assigned_to': task[5]
+        'task_date': format_date(task[4]),
+        'assigned_to': task[5],
+        'priority': task[6]
     } for task in tasks]
 
-    return jsonify({'tasks': task_list})
+    return jsonify({'tasks': task_list, 'has_more': len(tasks) == per_page})
+
+
+###Calendar route###
+@app.route('/calendar_events', methods=['GET'])
+def calendar_events():
+    if 'user_id' not in session:
+        return jsonify([]), 403
+
+    user_id = session['user_id']
+    # FullCalendar sends the visible range as ISO datetimes; only the date part is needed
+    start = request.args.get('start', '')[:10]
+    end = request.args.get('end', '')[:10]
+
+    query = f"""
+        SELECT id, title, description, status, task_date, {ASSIGNED_TO_SQL} as assigned_to, priority
+        FROM tasks
+        WHERE {TASK_VISIBLE_SQL}
+    """
+    params = [user_id, user_id, user_id]
+    if start and end:
+        query += " AND tasks.task_date >= %s AND tasks.task_date < %s"
+        params += [start, end]
+
+    cur = mysql.connection.cursor()
+    cur.execute(query, params)
+    tasks = cur.fetchall()
+    cur.close()
+
+    calendar_colors = {'Urgent': '#dc3545', 'High': '#fd7e14', 'Medium': '#0d6efd', 'Low': '#6c757d'}
+    events = [{
+        'id': task[0],
+        'title': task[1],
+        'start': format_date(task[4]),
+        'color': calendar_colors.get(task[6], '#0d6efd'),
+        'extendedProps': {
+            'description': task[2],
+            'status': task[3],
+            'assigned_to': task[5],
+            'priority': task[6]
+        }
+    } for task in tasks if task[4]]
+
+    return jsonify(events)
 
 # Route to add a new task
 @app.route('/add_task', methods=['GET', 'POST'])
@@ -382,6 +511,7 @@ def add_task():
         assigned_user_id = request.form.get('assigned_user_id')
         assigned_group_id = request.form.get('assigned_group_id')  # Added for group assignment
         notes = request.form.get('notes')
+        priority = clean_priority(request.form.get('priority'))
         user_id = session['user_id']
 
         # Ensure either user or group is assigned, but not both
@@ -397,20 +527,21 @@ def add_task():
         file = request.files.get('file')
         file_path = None
         if file and file.filename != '':
-            filename = secure_filename(file.filename)
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(file_path)
+            # Prefix with a random id so files with the same name don't overwrite each other
+            filename = f"{uuid.uuid4().hex[:12]}_{secure_filename(file.filename)}"
+            file.save(os.path.join(UPLOAD_DIR, filename))
+            file_path = UPLOAD_FOLDER + filename
 
         # Insert task into the database
         cur = mysql.connection.cursor()
         cur.execute("""
-            INSERT INTO tasks (title, description, task_date, company_id, branch_id, section_id, file_path, assigned_user_id, assigned_group_id, notes, user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO tasks (title, description, task_date, company_id, branch_id, section_id, file_path, assigned_user_id, assigned_group_id, notes, user_id, priority)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             title, description, task_date, company_id, branch_id, section_id, file_path,
             assigned_user_id if assigned_user_id else None,
             assigned_group_id if assigned_group_id else None,
-            notes, user_id
+            notes, user_id, priority
         ))
 
         task_id = cur.lastrowid  # Get the ID of the newly created task
@@ -418,9 +549,10 @@ def add_task():
 
         # Notify the assigned user or group
         if assigned_user_id:
-            notify_task_assignment(task_id, assigned_user_id)
+            notify_task_assignment(task_id, assigned_user_id, priority)
         elif assigned_group_id:
-            notify_group_assignment(task_id, assigned_group_id)
+            notify_group(task_id, assigned_group_id,
+                         f"A new {priority} priority task (ID: {task_id}) has been assigned to your group.")
 
         cur.close()
 
@@ -444,36 +576,24 @@ def add_task():
 
     cur.close()
 
-    return render_template('add_task.html', companies=companies, users=users, groups=groups)
+    # The calendar links here with ?date=YYYY-MM-DD to pre-fill the task date
+    return render_template('add_task.html', companies=companies, users=users, groups=groups,
+                           task_date=request.args.get('date', ''), default_priority=DEFAULT_PRIORITY)
 
-# Route to group notification
-def notify_group_assignment(task_id, group_id):
-    # Fetch all users in the specified group
+# Send a notification to every member of a group
+def notify_group(task_id, group_id, message):
     cur = mysql.connection.cursor()
 
     # Get the users associated with the group
-    cur.execute("""
-        SELECT users.id, users.username
-        FROM users
-        JOIN user_groups ON users.id = user_groups.user_id
-        WHERE user_groups.group_id = %s
-    """, [group_id])
-
+    cur.execute("SELECT user_id FROM user_groups WHERE group_id = %s", [group_id])
     users_in_group = cur.fetchall()
 
-    # Iterate over users in the group and create notifications
-    for user in users_in_group:
-        user_id = user[0]
-        username = user[1]
-
-        # Craft the notification message
-        message = f"A new task (ID: {task_id}) has been assigned to your group."
-
-        # Insert the notification into the notifications table
+    # Insert a notification for each member
+    for (user_id,) in users_in_group:
         cur.execute("""
-            INSERT INTO notifications (user_id, message)
-            VALUES (%s, %s)
-        """, (user_id, message))
+            INSERT INTO notifications (user_id, task_id, message)
+            VALUES (%s, %s, %s)
+        """, (user_id, task_id, message))
 
     mysql.connection.commit()
     cur.close()
@@ -503,22 +623,29 @@ def complete_task(task_id):
     if 'user_id' not in session:
         return "Unauthorized", 401
 
-    user_id = session['user_id']
     cur = mysql.connection.cursor()
 
+    # The creator, the assignee, members of the assigned group, and admins can complete a task
+    if not can_access_task(cur, task_id):
+        cur.close()
+        flash("You don't have permission to update this task.")
+        return redirect(request.referrer or url_for('index'))
+
     # Update task status to "Completed"
-    cur.execute("UPDATE tasks SET status = 'Completed' WHERE id = %s AND user_id = %s", (task_id, user_id))
+    cur.execute("UPDATE tasks SET status = 'Completed' WHERE id = %s", [task_id])
     mysql.connection.commit()
 
-    # Notify the assigned user
-    cur.execute("SELECT assigned_user_id FROM tasks WHERE id = %s", [task_id])
-    assigned_user_id = cur.fetchone()[0]
-
-    # Call the notification helper function
-    notify_task_status_change(task_id, assigned_user_id, "Completed")
-
+    # Notify the assigned user, or every member of the assigned group
+    cur.execute("SELECT assigned_user_id, assigned_group_id FROM tasks WHERE id = %s", [task_id])
+    assigned_user_id, assigned_group_id = cur.fetchone()
     cur.close()
-    return redirect(url_for('index'))
+
+    if assigned_user_id:
+        notify_task_status_change(task_id, assigned_user_id, "Completed")
+    elif assigned_group_id:
+        notify_group(task_id, assigned_group_id, f"Your group's task (ID: {task_id}) has been marked as Completed.")
+
+    return redirect(request.referrer or url_for('index'))
 
 
 # Delete task
@@ -527,13 +654,18 @@ def delete_task(task_id):
     if 'user_id' not in session:
         return "Unauthorized", 401
 
-    user_id = session['user_id']
+    # Only the creator or an admin can delete a task
     cur = mysql.connection.cursor()
-    cur.execute("DELETE FROM tasks WHERE id = %s AND user_id = %s", (task_id, user_id))
+    if is_admin():
+        cur.execute("DELETE FROM tasks WHERE id = %s", [task_id])
+    else:
+        cur.execute("DELETE FROM tasks WHERE id = %s AND user_id = %s", (task_id, session['user_id']))
+    deleted = cur.rowcount > 0
     mysql.connection.commit()
     cur.close()
 
-    return redirect(url_for('index'))
+    flash("Task deleted." if deleted else "Only the task's creator or an admin can delete it.")
+    return redirect(request.referrer or url_for('index'))
 
 
 ###Edit task route###
@@ -545,39 +677,63 @@ def edit_task(task_id):
 
     cur = mysql.connection.cursor()
 
+    if not can_access_task(cur, task_id):
+        cur.close()
+        flash("Task not found or you don't have permission to edit it.")
+        return redirect(url_for('index'))
+
+    cur.execute("SELECT title, description, task_date, assigned_user_id, status, priority, assigned_group_id "
+                "FROM tasks WHERE id = %s", (task_id,))
+    task = cur.fetchone()
+
     if request.method == 'POST':
         # Get form data
         title = request.form['title']
         description = request.form['description']
         task_date = request.form['task_date']
-        assigned_user_id = int(request.form['assigned_user_id'])  # Ensure this is an integer
-        status = request.form['status']
+        status = request.form['status'] if request.form.get('status') in ('Pending', 'Completed') else task[4]
+        priority = clean_priority(request.form.get('priority'))
+
+        # The assignee is sent as "user:<id>" or "group:<id>"
+        assign_type, _, assign_id = request.form.get('assignee', '').partition(':')
+        if assign_type not in ('user', 'group') or not assign_id.isdigit():
+            cur.close()
+            flash("Please assign the task to a user or a group.")
+            return redirect(url_for('edit_task', task_id=task_id))
+        assigned_user_id = int(assign_id) if assign_type == 'user' else None
+        assigned_group_id = int(assign_id) if assign_type == 'group' else None
 
         # Update task in the database
         cur.execute("""
             UPDATE tasks
-            SET title = %s, description = %s, task_date = %s, assigned_user_id = %s, status = %s
+            SET title = %s, description = %s, task_date = %s, assigned_user_id = %s, assigned_group_id = %s,
+                status = %s, priority = %s
             WHERE id = %s
-        """, (title, description, task_date, assigned_user_id, status, task_id))
+        """, (title, description, task_date, assigned_user_id, assigned_group_id, status, priority, task_id))
 
         mysql.connection.commit()
         cur.close()
 
+        # Notify whoever the task was reassigned to
+        if assigned_user_id and assigned_user_id != task[3]:
+            notify_task_assignment(task_id, assigned_user_id, priority)
+        elif assigned_group_id and assigned_group_id != task[6]:
+            notify_group(task_id, assigned_group_id,
+                         f"A {priority} priority task (ID: {task_id}) has been assigned to your group.")
+
         flash("Task updated successfully!")
         return redirect(url_for('index'))
 
-    # Fetch task information to prepopulate the form
-    cur.execute("SELECT title, description, task_date, assigned_user_id, status FROM tasks WHERE id = %s", (task_id,))
-    task = cur.fetchone()
-
-    # Fetch all users (id, username, email) for reassigning the task
+    # Fetch all users and groups for reassigning the task
     cur.execute("SELECT id, username, email FROM users")
     users = cur.fetchall()
+    cur.execute("SELECT id, name FROM groupss")
+    groups = cur.fetchall()
 
     cur.close()
 
-    # Pass task_id to the template along with task and users
-    return render_template('edit_task.html', task=task, users=users, task_id=task_id)
+    # Pass task_id to the template along with task, users and groups
+    return render_template('edit_task.html', task=task, users=users, groups=groups, task_id=task_id)
 
 
 ###Settings Route####
@@ -602,10 +758,15 @@ def register():
         cur = mysql.connection.cursor()
 
         # Insert the new user into the users table, including email
-        cur.execute("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)",
-                    (username, email, hashed_password))
-        mysql.connection.commit()
-        cur.close()
+        try:
+            cur.execute("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)",
+                        (username, email, hashed_password))
+            mysql.connection.commit()
+        except MySQLdb.IntegrityError:
+            flash("That username or email is already registered.")
+            return render_template('register.html')
+        finally:
+            cur.close()
 
         flash("Registration successful! Please log in.")
         return redirect(url_for('login'))
@@ -620,14 +781,16 @@ def login():
         password = request.form['password']
 
         cur = mysql.connection.cursor()
-        cur.execute("SELECT * FROM users WHERE username = %s", [username])
+        cur.execute("SELECT id, username, password, is_admin FROM users WHERE username = %s", [username])
         user = cur.fetchone()
         cur.close()
 
         if user and check_password_hash(user[2], password):  # user[2] is the hashed password
+            session.clear()
+            session.permanent = True  # Applies PERMANENT_SESSION_LIFETIME
             session['user_id'] = user[0]
             session['username'] = user[1]
-            session['is_admin'] = user[3]  # Assume user[3] is a boolean indicating admin status
+            session['is_admin'] = bool(user[3])
             flash("Login successful!")
             return redirect(url_for('index'))
         else:
@@ -800,12 +963,14 @@ def profile():
     cur.execute("SELECT username, email FROM users WHERE id = %s", [user_id])
     user_info = cur.fetchone()  # user_info[0] = username, user_info[1] = email
 
-    # Fetch tasks assigned to this user
-    cur.execute("""
-        SELECT id, title, description, task_date, status
+    # Fetch tasks assigned to this user or to one of their groups
+    cur.execute(f"""
+        SELECT id, title, description, task_date, status, priority
         FROM tasks
         WHERE assigned_user_id = %s
-    """, [user_id])
+           OR assigned_group_id IN (SELECT group_id FROM user_groups WHERE user_id = %s)
+        ORDER BY {PRIORITY_ORDER_SQL}, task_date
+    """, [user_id, user_id])
     assigned_tasks = cur.fetchall()
 
     cur.close()
@@ -815,8 +980,7 @@ def profile():
 #User logout
 @app.route('/logout')
 def logout():
-    session.pop('user_id', None)
-    session.pop('username', None)
+    session.clear()
     flash("You have been logged out.")
     return redirect(url_for('login'))
 
@@ -1016,65 +1180,71 @@ def edit_section(section_id):
     return render_template('edit_section.html', section=section, branches=branches)
 
 ###Reports Route####
+REPORT_FILTERS = ['start_date', 'end_date', 'username', 'company_id', 'branch_id', 'section_id', 'priority']
+REPORT_COLUMNS = ['Task ID', 'Title', 'Description', 'Task Date', 'Status', 'Notes', 'File Path',
+                  'Assigned To', 'Email', 'Company', 'Branch', 'Section', 'Priority']
+
+
+def fetch_report_tasks(filters):
+    """Runs the report query with the given filters; rows follow REPORT_COLUMNS."""
+    # LEFT JOINs so tasks assigned to a group, or without a company/branch/section, are still included
+    query = f"""
+        SELECT tasks.id, tasks.title, tasks.description, tasks.task_date, tasks.status, tasks.notes,
+               tasks.file_path, COALESCE(users.username, groupss.name) as assigned_to, users.email,
+               companies.name as company, branches.name as branch, sections.name as section, tasks.priority
+        FROM tasks
+        LEFT JOIN users ON tasks.assigned_user_id = users.id
+        LEFT JOIN groupss ON tasks.assigned_group_id = groupss.id
+        LEFT JOIN companies ON tasks.company_id = companies.id
+        LEFT JOIN branches ON tasks.branch_id = branches.id
+        LEFT JOIN sections ON tasks.section_id = sections.id
+        WHERE 1=1
+    """
+    params = []
+
+    # Filter by date range (either end may be left open)
+    if filters.get('start_date'):
+        query += " AND tasks.task_date >= %s"
+        params.append(filters['start_date'])
+    if filters.get('end_date'):
+        query += " AND tasks.task_date <= %s"
+        params.append(filters['end_date'])
+
+    # Filter by username, company, branch, section and priority
+    if filters.get('username'):
+        query += " AND users.username = %s"
+        params.append(filters['username'])
+    for column in ('company_id', 'branch_id', 'section_id'):
+        if filters.get(column):
+            query += f" AND tasks.{column} = %s"
+            params.append(filters[column])
+    if filters.get('priority') in PRIORITIES:
+        query += " AND tasks.priority = %s"
+        params.append(filters['priority'])
+
+    query += f" ORDER BY tasks.task_date, {PRIORITY_ORDER_SQL}"
+
+    cur = mysql.connection.cursor()
+    cur.execute(query, params)
+    tasks = cur.fetchall()
+    cur.close()
+    return tasks
+
+
+def report_filters_from(source):
+    return {name: source.get(name, '') for name in REPORT_FILTERS}
+
+
 @app.route('/report', methods=['GET', 'POST'])
 def generate_report():
-    if 'user_id' not in session or not session.get('is_admin', False):
+    if not is_admin():
         flash("Unauthorized access.")
         return redirect(url_for('index'))
 
+    filters = report_filters_from(request.form)
+    tasks = fetch_report_tasks(filters)
+
     cur = mysql.connection.cursor()
-
-    # Initialize filters
-    start_date = request.form.get('start_date', '')
-    end_date = request.form.get('end_date', '')
-    username = request.form.get('username', '')
-    company_id = request.form.get('company_id', '')
-    branch_id = request.form.get('branch_id', '')
-    section_id = request.form.get('section_id', '')
-
-    # SQL query with optional filters
-    query = """
-        SELECT tasks.id, tasks.title, tasks.description, tasks.task_date, tasks.status, tasks.notes, 
-               tasks.file_path, users.username, users.email, companies.name as company, branches.name as branch, sections.name as section
-        FROM tasks
-        JOIN users ON tasks.assigned_user_id = users.id
-        JOIN companies ON tasks.company_id = companies.id
-        JOIN branches ON tasks.branch_id = branches.id
-        JOIN sections ON tasks.section_id = sections.id
-        WHERE 1=1
-    """
-
-    filters = []
-
-    # Filter by date range
-    if start_date and end_date:
-        query += " AND tasks.task_date BETWEEN %s AND %s"
-        filters.append(start_date)
-        filters.append(end_date)
-
-    # Filter by username
-    if username:
-        query += " AND users.username = %s"
-        filters.append(username)
-
-    # Filter by company
-    if company_id:
-        query += " AND tasks.company_id = %s"
-        filters.append(company_id)
-
-    # Filter by branch
-    if branch_id:
-        query += " AND tasks.branch_id = %s"
-        filters.append(branch_id)
-
-    # Filter by section
-    if section_id:
-        query += " AND tasks.section_id = %s"
-        filters.append(section_id)
-
-    # Execute the query
-    cur.execute(query, filters)
-    tasks = cur.fetchall()
 
     # Fetch all usernames for filter dropdown
     cur.execute("SELECT username FROM users")
@@ -1095,130 +1265,67 @@ def generate_report():
     cur.close()
 
     return render_template('report.html', tasks=tasks, users=users, companies=companies, branches=branches, sections=sections,
-                           start_date=start_date, end_date=end_date, selected_user=username,
-                           selected_company=company_id, selected_branch=branch_id, selected_section=section_id)
+                           filters=filters, pdf_available=pdfkit is not None)
 
 ###Export to excel
 @app.route('/export_report_excel', methods=['GET'])
 def export_report_excel():
-    start_date = request.args.get('start_date', '')
-    end_date = request.args.get('end_date', '')
-    username = request.args.get('username', '')
+    if not is_admin():
+        flash("Unauthorized access.")
+        return redirect(url_for('index'))
 
-    # Fetch tasks based on filters (similar to generate_report logic)
-    cur = mysql.connection.cursor()
-    query = """
-        SELECT tasks.id, tasks.title, tasks.description, tasks.task_date, tasks.status, tasks.notes, 
-               tasks.file_path, users.username, users.email, companies.name as company, branches.name as branch, sections.name as section
-        FROM tasks
-        JOIN users ON tasks.assigned_user_id = users.id
-        JOIN companies ON tasks.company_id = companies.id
-        JOIN branches ON tasks.branch_id = branches.id
-        JOIN sections ON tasks.section_id = sections.id
-        WHERE 1=1
-    """
-    filters = []
-    if start_date and end_date:
-        query += " AND tasks.task_date BETWEEN %s AND %s"
-        filters.append(start_date)
-        filters.append(end_date)
-    if username:
-        query += " AND users.username = %s"
-        filters.append(username)
+    tasks = fetch_report_tasks(report_filters_from(request.args))
 
-    cur.execute(query, filters)
-    tasks = cur.fetchall()
-    cur.close()
+    # Build the Excel file in memory
+    df = pd.DataFrame(list(tasks), columns=REPORT_COLUMNS)
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
 
-    # Convert to DataFrame for Excel export
-    df = pd.DataFrame(tasks, columns=['Task ID', 'Title', 'Description', 'Task Date', 'Status', 'Notes', 'File Path',
-                                      'Assigned User', 'Email', 'Company', 'Branch', 'Section'])
-
-    # Save the DataFrame to an Excel file
-    excel_path = 'task_report.xlsx'
-    df.to_excel(excel_path, index=False)
-
-    return send_file(excel_path, as_attachment=True)
+    return send_file(output, as_attachment=True, download_name='task_report.xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 ###Report export as PDF
 @app.route('/export_report_pdf', methods=['GET'])
 def export_report_pdf():
-    start_date = request.args.get('start_date', '')
-    end_date = request.args.get('end_date', '')
-    username = request.args.get('username', '')
+    if not is_admin():
+        flash("Unauthorized access.")
+        return redirect(url_for('index'))
 
-    # Fetch tasks based on filters (similar to generate_report logic)
-    cur = mysql.connection.cursor()
-    query = """
-        SELECT tasks.id, tasks.title, tasks.description, tasks.task_date, tasks.status, tasks.notes, 
-               tasks.file_path, users.username, users.email, companies.name as company, branches.name as branch, sections.name as section
-        FROM tasks
-        JOIN users ON tasks.assigned_user_id = users.id
-        JOIN companies ON tasks.company_id = companies.id
-        JOIN branches ON tasks.branch_id = branches.id
-        JOIN sections ON tasks.section_id = sections.id
-        WHERE 1=1
-    """
-    filters = []
-    if start_date and end_date:
-        query += " AND tasks.task_date BETWEEN %s AND %s"
-        filters.append(start_date)
-        filters.append(end_date)
-    if username:
-        query += " AND users.username = %s"
-        filters.append(username)
+    if pdfkit is None:
+        flash("PDF export needs the pdfkit package and wkhtmltopdf installed.")
+        return redirect(url_for('generate_report'))
 
-    cur.execute(query, filters)
-    tasks = cur.fetchall()
-    cur.close()
+    tasks = fetch_report_tasks(report_filters_from(request.args))
 
-    # Render the report to an HTML template
-    html = render_template('report_pdf.html', tasks=tasks)
+    # Render the report to an HTML template, then convert it to PDF in memory
+    html = render_template('report_pdf.html', tasks=tasks, current_date=date.today().isoformat())
+    try:
+        pdf = pdfkit.from_string(html, False)
+    except OSError as e:
+        flash(f"PDF export failed (is wkhtmltopdf installed?): {e}")
+        return redirect(url_for('generate_report'))
 
-    # Save the rendered HTML to a PDF
-    pdf_path = 'task_report.pdf'
-    pdfkit.from_string(html, pdf_path)
-
-    return send_file(pdf_path, as_attachment=True)
+    return send_file(BytesIO(pdf), as_attachment=True, download_name='task_report.pdf', mimetype='application/pdf')
 
 ###Export Reports####
 @app.route('/report/download', methods=['GET', 'POST'])
 def download_report():
-    if 'user_id' not in session or not session.get('is_admin', False):
+    if not is_admin():
         flash("Unauthorized access.")
         return redirect(url_for('index'))
 
-    cur = mysql.connection.cursor()
-
-    # Fetch tasks (you can reuse the logic from the report generation)
-    query = """
-        SELECT tasks.id, tasks.title, tasks.description, tasks.task_date, tasks.status, tasks.notes, 
-               users.username, users.email, companies.name as company, branches.name as branch, sections.name as section
-        FROM tasks
-        JOIN users ON tasks.assigned_user_id = users.id
-        JOIN companies ON tasks.company_id = companies.id
-        JOIN branches ON tasks.branch_id = branches.id
-        JOIN sections ON tasks.section_id = sections.id
-    """
-    cur.execute(query)
-    tasks = cur.fetchall()
-    cur.close()
+    tasks = fetch_report_tasks(report_filters_from(request.values))
 
     # Prepare CSV output
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(
-        ['Task ID', 'Title', 'Description', 'Task Date', 'Status', 'Assigned User', 'Email', 'Company', 'Branch',
-         'Section', 'Notes'])
+    writer.writerow(REPORT_COLUMNS)
+    writer.writerows(tasks)
 
-    for task in tasks:
-        writer.writerow(
-            [task[0], task[1], task[2], task[3], task[4], task[6], task[7], task[8], task[9], task[10], task[5]])
-
-    output.seek(0)
-
-    # Return CSV file as response
-    return Response(output, mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=task_report.csv"})
+    # Return CSV file as response (with a BOM so Excel reads Arabic text correctly)
+    return Response('﻿' + output.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment;filename=task_report.csv"})
 
 
 
@@ -1238,11 +1345,15 @@ def manage_users():
 
         # Insert the new user into the database, including email
         cur = mysql.connection.cursor()
-        cur.execute("INSERT INTO users (username, email, password, is_admin) VALUES (%s, %s, %s, %s)",
-                    (username, email, hashed_password, is_admin))
-        mysql.connection.commit()
-        cur.close()
-        flash("User added successfully!")
+        try:
+            cur.execute("INSERT INTO users (username, email, password, is_admin) VALUES (%s, %s, %s, %s)",
+                        (username, email, hashed_password, is_admin))
+            mysql.connection.commit()
+            flash("User added successfully!")
+        except MySQLdb.IntegrityError:
+            flash("That username or email is already registered.")
+        finally:
+            cur.close()
 
     # Fetch users to display in the table
     cur = mysql.connection.cursor()
@@ -1303,6 +1414,5 @@ def page_not_found(e):
 def internal_server_error(e):
     return render_template('500.html'), 500
 
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 if __name__ == '__main__':
     app.run(debug=True)

@@ -6,9 +6,18 @@
 
     <h1 class="text-center mb-4">Your Tasks</h1>
 
-    <!-- Add New Task Button -->
-    <div class="d-flex justify-content-between mb-3">
+    <!-- Add New Task Button and Priority Filter -->
+    <div class="d-flex justify-content-between align-items-center mb-3">
         <a href="{{ url_for('add_task') }}" class="btn btn-success">Add New Task</a>
+        <div class="d-flex align-items-center gap-2">
+            <label for="priority-filter" class="form-label mb-0">Priority</label>
+            <select id="priority-filter" class="form-select form-select-sm" style="width: auto;">
+                <option value="">All</option>
+                {% for p in priorities %}
+                    <option value="{{ p }}">{{ p }}</option>
+                {% endfor %}
+            </select>
+        </div>
     </div>
 
     <!-- Modernized Task Table with Infinite Scroll Container -->
@@ -18,9 +27,10 @@
                 <tr>
                     <th>Task Title</th>
                     <th>Description</th>
+                    <th>Priority</th>
                     <th>Status</th>
                     <th>Task Date</th>
-                    <th>Assigned To</th> <!-- Assigned user -->
+                    <th>Assigned To</th> <!-- Assigned user or group -->
                     <th>Actions</th> <!-- Dropdown for actions -->
                 </tr>
             </thead>
@@ -28,12 +38,13 @@
                 <!-- Tasks will be dynamically loaded here -->
             </tbody>
         </table>
-    </div>
+        <p id="no-tasks" class="text-center text-muted" style="display:none;">No tasks found.</p>
 
-    <!-- Loading Spinner for Infinite Scroll -->
-    <div id="loading" class="text-center" style="display:none;">
-        <div class="spinner-border text-primary" role="status">
-            <span class="visually-hidden">Loading...</span>
+        <!-- Loading Spinner for Infinite Scroll -->
+        <div id="loading" class="text-center">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
         </div>
     </div>
 
@@ -53,34 +64,6 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body" id="task-info-content">
-                    <!-- Task details will be injected here dynamically -->
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- FullCalendar CSS and JS -->
-    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.10.1/main.min.css' rel='stylesheet' />
-    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.10.1/main.min.js'></script>
-    <script src='https://cdn.jsdelivr.net/npm/@fullcalendar/interaction@5.10.1/main.global.min.js'></script>
-
-    <!-- Bootstrap JS and Popper.js (required for tooltips) -->
-    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.10.2/dist/umd/popper.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-
-
-    <!-- Task Information Modal -->
-    <div class="modal fade" id="taskInfoModal" tabindex="-1" aria-labelledby="taskInfoModalLabel" aria-hidden="true">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="taskInfoModalLabel">Task Information</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body" id="task-info-content">
                     <!-- Task details will be dynamically injected here -->
                     <p>Loading task information...</p>
                 </div>
@@ -91,37 +74,43 @@
         </div>
     </div>
 
-
     <script>
+        const priorityColors = {{ priority_colors | tojson }};
+
+        function priorityBadge(priority) {
+            return `<span class="badge bg-${priorityColors[priority] || 'secondary'}">${escapeHtml(priority)}</span>`;
+        }
+
         // Variables to manage pagination and fetching
         let currentPage = 1;
         let isLoading = false;
+        let hasMore = true;
+        const loading = document.getElementById('loading');
 
         // Function to fetch tasks from the server
         function fetchTasks() {
-            if (isLoading) return;
+            if (isLoading || !hasMore) return;
             isLoading = true;
 
-            // Show loading spinner
-            document.getElementById('loading').style.display = 'block';
-
-            fetch(`/tasks_json?page=${currentPage}`)
+            const priority = document.getElementById('priority-filter').value;
+            fetch(`/tasks_json?page=${currentPage}&priority=${encodeURIComponent(priority)}`)
                 .then(response => response.json())
                 .then(data => {
                     const taskList = document.getElementById('task-list');
 
                     // Append each task to the task table
                     data.tasks.forEach(task => {
-                        taskList.innerHTML += `
+                        taskList.insertAdjacentHTML('beforeend', `
                             <tr>
-                                <td>${task.title}</td>
-                                <td>${task.description}</td>
-                                <td>${task.status === 'Completed' ? '<span class="badge bg-success">Completed</span>' : '<span class="badge bg-warning">Pending</span>'}</td>
-                                <td>${task.task_date}</td>
-                                <td>${task.assigned_to}</td>
+                                <td>${escapeHtml(task.title)}</td>
+                                <td>${escapeHtml(task.description)}</td>
+                                <td>${priorityBadge(task.priority)}</td>
+                                <td>${task.status === 'Completed' ? '<span class="badge bg-success">Completed</span>' : '<span class="badge bg-warning text-dark">Pending</span>'}</td>
+                                <td>${escapeHtml(task.task_date)}</td>
+                                <td>${escapeHtml(task.assigned_to)}</td>
                                 <td>
                                     <div class="dropdown">
-                                        <button class="btn btn-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">Actions</button>
+                                        <button class="btn btn-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}'>Actions</button>
                                         <ul class="dropdown-menu">
                                             <li><a class="dropdown-item" href="/edit_task/${task.id}">Edit</a></li>
                                             ${task.status === 'Pending' ? `
@@ -131,7 +120,7 @@
                                                 </form>
                                             </li>` : ''}
                                             <li>
-                                                <form action="/delete_task/${task.id}" method="POST">
+                                                <form action="/delete_task/${task.id}" method="POST" onsubmit="return confirm('Delete this task?');">
                                                     <button type="submit" class="dropdown-item text-danger">Delete</button>
                                                 </form>
                                             </li>
@@ -142,47 +131,65 @@
                                         </ul>
                                     </div>
                                 </td>
-                            </tr>`;
+                            </tr>`);
                     });
 
-                    // Hide loading spinner
-                    document.getElementById('loading').style.display = 'none';
-
-                    // Increment page count for the next fetch
+                    // Stop loading once the last page has been reached
+                    hasMore = data.has_more;
                     currentPage += 1;
                     isLoading = false;
+                    loading.style.display = hasMore ? 'block' : 'none';
+                    document.getElementById('no-tasks').style.display = taskList.children.length ? 'none' : 'block';
+
+                    // Re-observe so the next page loads if the spinner is still on screen (e.g. a tall window)
+                    if (hasMore) {
+                        observer.unobserve(loading);
+                        observer.observe(loading);
+                    }
                 })
                 .catch(error => {
                     console.error('Error fetching tasks:', error);
                     isLoading = false;
                 });
         }
+
+        // Reload the list from the first page when the priority filter changes
+        document.getElementById('priority-filter').addEventListener('change', () => {
+            document.getElementById('task-list').innerHTML = '';
+            currentPage = 1;
+            hasMore = true;
+            loading.style.display = 'block';
+            fetchTasks();
+        });
+
         // Function to show full task information in the modal
         function showTaskInfo(taskId) {
-            // Fetch the full task info from the server (this route should be implemented in Flask)
+            const taskInfoContent = document.getElementById('task-info-content');
+            taskInfoContent.innerHTML = '<p>Loading task information...</p>';
+
             fetch(`/get_task_info/${taskId}`)
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response.json();
+                })
                 .then(task => {
                     // Inject the task information into the modal content
-                    const taskInfoContent = document.getElementById('task-info-content');
                     taskInfoContent.innerHTML = `
-                        <p><strong>Title:</strong> ${task.title}</p>
-                        <p><strong>Description:</strong> ${task.description}</p>
-                        <p><strong>Status:</strong> ${task.status}</p>
-                        <p><strong>Task Date:</strong> ${task.task_date}</p>
-                        <p><strong>Assigned To:</strong> ${task.assigned_to}</p>
-                        <p><strong>Notes:</strong> ${task.notes}</p>
-                        <p><strong>File:</strong> ${task.file_path ? '<a href="/uploads/' + task.file_path + '" target="_blank">Download</a>' : 'No file attached'}</p>
+                        <p><strong>Title:</strong> ${escapeHtml(task.title)}</p>
+                        <p><strong>Description:</strong> ${escapeHtml(task.description)}</p>
+                        <p><strong>Priority:</strong> ${priorityBadge(task.priority)}</p>
+                        <p><strong>Status:</strong> ${escapeHtml(task.status)}</p>
+                        <p><strong>Task Date:</strong> ${escapeHtml(task.task_date)}</p>
+                        <p><strong>Assigned To:</strong> ${escapeHtml(task.assigned_to)}</p>
+                        <p><strong>Notes:</strong> ${escapeHtml(task.notes)}</p>
+                        <p><strong>File:</strong> ${task.file_url ? `<a href="${escapeHtml(task.file_url)}" target="_blank">Download</a>` : 'No file attached'}</p>
                     `;
                 })
                 .catch(error => {
                     console.error('Error fetching task info:', error);
-                    const taskInfoContent = document.getElementById('task-info-content');
                     taskInfoContent.innerHTML = `<p>Error loading task information.</p>`;
                 });
         }
-
-
 
         // Infinite Scroll using Intersection Observer API
         const observer = new IntersectionObserver(entries => {
@@ -192,23 +199,19 @@
                 }
             });
         }, {
-            root: null, // Use the browser viewport as root
+            root: document.getElementById('task-container'), // The table scrolls inside this container
             rootMargin: '0px',
-            threshold: 1.0
+            threshold: 0.1
         });
 
-        // Observe the loading spinner to detect when user scrolls to the bottom
-        observer.observe(document.getElementById('loading'));
-
-        // Initial task fetch when the page loads
-        fetchTasks();
+        // Observe the loading spinner (this also triggers the first load)
+        observer.observe(loading);
 
         document.addEventListener('DOMContentLoaded', function() {
             var calendarEl = document.getElementById('calendar');
             var calendar = new FullCalendar.Calendar(calendarEl, {
                 initialView: 'dayGridMonth',  // Monthly view
-                selectable: true,             // Allows selection of dates for new tasks
-                events: '/tasks_json',        // Load tasks from your Flask app as JSON
+                events: '/calendar_events',   // Tasks in the visible range, coloured by priority
 
                 // Modern toolbar layout
                 headerToolbar: {
@@ -219,7 +222,7 @@
 
                 // Handle clicking on a date to create a new task
                 dateClick: function(info) {
-                    var selectedDate = info.dateStr;  // The clicked date in "YYYY-MM-DD" format
+                    var selectedDate = info.dateStr.substring(0, 10);  // "YYYY-MM-DD"
                     window.location.href = "/add_task?date=" + selectedDate;  // Redirect to add task form
                 },
 
@@ -232,10 +235,12 @@
                 },
                 eventDidMount: function(info) {
                     // Initialize Bootstrap Tooltip on each event
-                    var tooltip = new bootstrap.Tooltip(info.el, {
-                        title: '<strong>Description:</strong> ' + info.event.extendedProps.description + '<br>' +
-                               '<strong>Status:</strong> ' + info.event.extendedProps.status + '<br>' +
-                               '<strong>Email:</strong> ' + info.event.extendedProps.email,
+                    var props = info.event.extendedProps;
+                    new bootstrap.Tooltip(info.el, {
+                        title: '<strong>Priority:</strong> ' + escapeHtml(props.priority) + '<br>' +
+                               '<strong>Description:</strong> ' + escapeHtml(props.description) + '<br>' +
+                               '<strong>Status:</strong> ' + escapeHtml(props.status) + '<br>' +
+                               '<strong>Assigned To:</strong> ' + escapeHtml(props.assigned_to),
                         placement: 'top', // Tooltip position
                         trigger: 'hover', // Trigger tooltip on hover
                         html: true        // Allow HTML content

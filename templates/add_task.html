@@ -18,7 +18,16 @@
 
     <div class="mb-3">
         <label for="task_date" class="form-label">Task Date</label>
-        <input type="date" name="task_date" class="form-control" required>
+        <input type="date" name="task_date" class="form-control" value="{{ task_date }}" required>
+    </div>
+
+    <div class="mb-3">
+        <label for="priority" class="form-label">Priority</label>
+        <select name="priority" id="priority" class="form-select">
+            {% for p in priorities %}
+                <option value="{{ p }}" {% if p == default_priority %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+        </select>
     </div>
 
     <div class="mb-3">
@@ -137,7 +146,7 @@
                 let branchSelect = document.getElementById('branch');
                 branchSelect.innerHTML = '<option value="">Select Branch</option>';
                 data.branches.forEach(branch => {
-                    branchSelect.innerHTML += `<option value="${branch.id}">${branch.name}</option>`;
+                    branchSelect.innerHTML += `<option value="${branch.id}">${escapeHtml(branch.name)}</option>`;
                 });
 
                 document.getElementById('section').innerHTML = '<option value="">Select Section</option>';
@@ -160,7 +169,7 @@
                 let sectionSelect = document.getElementById('section');
                 sectionSelect.innerHTML = '<option value="">Select Section</option>';
                 data.sections.forEach(section => {
-                    sectionSelect.innerHTML += `<option value="${section.id}">${section.name}</option>`;
+                    sectionSelect.innerHTML += `<option value="${section.id}">${escapeHtml(section.name)}</option>`;
                 });
             })
             .catch(error => {

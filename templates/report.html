@@ -11,11 +11,11 @@
         <!-- Date Range Filter -->
         <div class="col-md-4">
             <label for="start_date" class="form-label">Start Date</label>
-            <input type="date" class="form-control" name="start_date" value="{{ start_date }}">
+            <input type="date" class="form-control" name="start_date" value="{{ filters.start_date }}">
         </div>
         <div class="col-md-4">
             <label for="end_date" class="form-label">End Date</label>
-            <input type="date" class="form-control" name="end_date" value="{{ end_date }}">
+            <input type="date" class="form-control" name="end_date" value="{{ filters.end_date }}">
         </div>
 
         <!-- Username Filter -->
@@ -24,7 +24,7 @@
             <select class="form-select" name="username">
                 <option value="">All Users</option>
                 {% for user in users %}
-                    <option value="{{ user[0] }}" {% if selected_user == user[0] %}selected{% endif %}>{{ user[0] }}</option>
+                    <option value="{{ user[0] }}" {% if filters.username == user[0] %}selected{% endif %}>{{ user[0] }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -35,7 +35,7 @@
             <select class="form-select" name="company_id">
                 <option value="">All Companies</option>
                 {% for company in companies %}
-                    <option value="{{ company[0] }}" {% if selected_company == company[0] %}selected{% endif %}>{{ company[1] }}</option>
+                    <option value="{{ company[0] }}" {% if filters.company_id == company[0]|string %}selected{% endif %}>{{ company[1] }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -46,7 +46,7 @@
             <select class="form-select" name="branch_id">
                 <option value="">All Branches</option>
                 {% for branch in branches %}
-                    <option value="{{ branch[0] }}" {% if selected_branch == branch[0] %}selected{% endif %}>{{ branch[1] }}</option>
+                    <option value="{{ branch[0] }}" {% if filters.branch_id == branch[0]|string %}selected{% endif %}>{{ branch[1] }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -57,7 +57,18 @@
             <select class="form-select" name="section_id">
                 <option value="">All Sections</option>
                 {% for section in sections %}
-                    <option value="{{ section[0] }}" {% if selected_section == section[0] %}selected{% endif %}>{{ section[1] }}</option>
+                    <option value="{{ section[0] }}" {% if filters.section_id == section[0]|string %}selected{% endif %}>{{ section[1] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Priority Filter -->
+        <div class="col-md-4">
+            <label for="priority" class="form-label">Priority</label>
+            <select class="form-select" name="priority" id="priority">
+                <option value="">All Priorities</option>
+                {% for p in priorities %}
+                    <option value="{{ p }}" {% if filters.priority == p %}selected{% endif %}>{{ p }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -66,7 +77,11 @@
         <div class="col-md-12 mt-3 d-flex justify-content-between">
             <button type="submit" class="btn btn-primary">Generate Report</button>
             <div>
-                <a href="{{ url_for('export_report_excel', start_date=start_date, end_date=end_date, username=selected_user, company_id=selected_company, branch_id=selected_branch, section_id=selected_section) }}" class="btn btn-success">Export to Excel</a>
+                <a href="{{ url_for('export_report_excel', **filters) }}" class="btn btn-success">Export to Excel</a>
+                <a href="{{ url_for('download_report', **filters) }}" class="btn btn-outline-success">Export to CSV</a>
+                {% if pdf_available %}
+                <a href="{{ url_for('export_report_pdf', **filters) }}" class="btn btn-outline-danger">Export to PDF</a>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -80,8 +95,9 @@
             <th>Title</th>
             <th>Description</th>
             <th>Task Date</th>
+            <th>Priority</th>
             <th>Status</th>
-            <th>Assigned User</th>
+            <th>Assigned To</th>
             <th>Email</th>
             <th>Company</th>
             <th>Branch</th>
@@ -97,14 +113,19 @@
             <td>{{ task[1] }}</td> <!-- Title -->
             <td>{{ task[2] }}</td> <!-- Description -->
             <td>{{ task[3] }}</td> <!-- Task Date -->
+            <td><span class="badge bg-{{ priority_colors.get(task[12], 'secondary') }}">{{ task[12] }}</span></td> <!-- Priority -->
             <td>{{ task[4] }}</td> <!-- Status -->
-            <td>{{ task[7] }}</td> <!-- Username -->
+            <td>{{ task[7] }}</td> <!-- User or group -->
             <td>{{ task[8] }}</td> <!-- Email -->
             <td>{{ task[9] }}</td> <!-- Company -->
             <td>{{ task[10] }}</td> <!-- Branch -->
             <td>{{ task[11] }}</td> <!-- Section -->
             <td>{{ task[5] }}</td> <!-- Notes -->
             <td>{{ task[6] }}</td> <!-- File Path -->
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="13" class="text-center">No tasks match these filters</td>
         </tr>
         {% endfor %}
     </tbody>

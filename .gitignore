@@ -1,0 +1,17 @@
+# Local secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated reports
+task_report.xlsx
+task_report.pdf
+task_report.csv
+
+# User uploads
+uploads/*
+!uploads/.gitkeep
