@@ -40,6 +40,12 @@ PRIORITY_ORDER_SQL = "FIELD(tasks.priority, 'Urgent', 'High', 'Medium', 'Low')"
 def clean_priority(value):
     return value if value in PRIORITIES else DEFAULT_PRIORITY
 
+
+# Task statuses, in Kanban board column order
+STATUSES = ['To Do', 'In Progress', 'In Review', 'Completed']
+DEFAULT_STATUS = 'To Do'
+STATUS_COLORS = {'To Do': 'secondary', 'In Progress': 'primary', 'In Review': 'info', 'Completed': 'success'}
+
 # Function to switch language
 @app.route('/switch_language/<language>')
 def switch_language(language):
@@ -54,7 +60,8 @@ def get_language():
 
 @app.context_processor
 def inject_globals():
-    return dict(lang=get_language(), priorities=PRIORITIES, priority_colors=PRIORITY_COLORS)
+    return dict(lang=get_language(), priorities=PRIORITIES, priority_colors=PRIORITY_COLORS,
+                statuses=STATUSES, status_colors=STATUS_COLORS)
 
 
 # MySQL Configurations (set these in the environment or in a .env file)
@@ -105,12 +112,27 @@ def notify_task_assignment(task_id, assigned_user_id, priority=DEFAULT_PRIORITY)
     cur.close()
 
 
-# Insert notification when task status change
-def notify_task_status_change(task_id, assigned_user_id, new_status):
-    message = f"Your task has been marked as {new_status}."
+# Insert notifications when a task's status changes: to the assigned user, or to every member of the
+# assigned group. The person who made the change is not notified.
+def notify_task_status_change(task_id, new_status):
     cur = mysql.connection.cursor()
-    cur.execute("INSERT INTO notifications (user_id, task_id, message) VALUES (%s, %s, %s)",
-                (assigned_user_id, task_id, message))
+    cur.execute("SELECT assigned_user_id, assigned_group_id FROM tasks WHERE id = %s", [task_id])
+    assigned_user_id, assigned_group_id = cur.fetchone()
+
+    if assigned_user_id:
+        recipients = [assigned_user_id]
+        message = f"Your task (ID: {task_id}) has been marked as {new_status}."
+    elif assigned_group_id:
+        cur.execute("SELECT user_id FROM user_groups WHERE group_id = %s", [assigned_group_id])
+        recipients = [row[0] for row in cur.fetchall()]
+        message = f"Your group's task (ID: {task_id}) has been marked as {new_status}."
+    else:
+        recipients = []
+
+    for user_id in recipients:
+        if user_id != session.get('user_id'):
+            cur.execute("INSERT INTO notifications (user_id, task_id, message) VALUES (%s, %s, %s)",
+                        (user_id, task_id, message))
     mysql.connection.commit()
     cur.close()
 
@@ -493,6 +515,69 @@ def calendar_events():
 
     return jsonify(events)
 
+
+### Kanban board ###
+@app.route('/board')
+def board():
+    if 'user_id' not in session:
+        flash("Please log in to view your tasks.")
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    priority = request.args.get('priority', '')
+
+    query = f"""
+        SELECT id, title, status, task_date, {ASSIGNED_TO_SQL} as assigned_to, priority
+        FROM tasks
+        WHERE {TASK_VISIBLE_SQL}
+    """
+    params = [user_id, user_id, user_id]
+    if priority in PRIORITIES:
+        query += " AND tasks.priority = %s"
+        params.append(priority)
+    query += f" ORDER BY {PRIORITY_ORDER_SQL}, tasks.task_date"
+
+    cur = mysql.connection.cursor()
+    cur.execute(query, params)
+    tasks = cur.fetchall()
+    cur.close()
+
+    # Group tasks into one column per status; unknown statuses go in the first column
+    columns = {status: [] for status in STATUSES}
+    for task in tasks:
+        columns.get(task[2], columns[DEFAULT_STATUS]).append(task)
+
+    return render_template('board.html', columns=columns, selected_priority=priority, today=date.today())
+
+
+# Change a task's status (used when a card is dragged to another column)
+@app.route('/update_task_status/<int:task_id>', methods=['POST'])
+def update_task_status(task_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    # Only accept JSON, which a cross-site form post cannot send
+    data = request.get_json(silent=True) or {}
+    status = data.get('status')
+    if status not in STATUSES:
+        return jsonify({'error': 'Invalid status'}), 400
+
+    cur = mysql.connection.cursor()
+    if not can_access_task(cur, task_id):
+        cur.close()
+        return jsonify({'error': 'Task not found'}), 404
+
+    cur.execute("SELECT status FROM tasks WHERE id = %s", [task_id])
+    old_status = cur.fetchone()[0]
+    cur.execute("UPDATE tasks SET status = %s WHERE id = %s", (status, task_id))
+    mysql.connection.commit()
+    cur.close()
+
+    if status != old_status:
+        notify_task_status_change(task_id, status)
+
+    return jsonify({'id': task_id, 'status': status})
+
 # Route to add a new task
 @app.route('/add_task', methods=['GET', 'POST'])
 def add_task():
@@ -535,13 +620,13 @@ def add_task():
         # Insert task into the database
         cur = mysql.connection.cursor()
         cur.execute("""
-            INSERT INTO tasks (title, description, task_date, company_id, branch_id, section_id, file_path, assigned_user_id, assigned_group_id, notes, user_id, priority)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO tasks (title, description, task_date, company_id, branch_id, section_id, file_path, assigned_user_id, assigned_group_id, notes, user_id, priority, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             title, description, task_date, company_id, branch_id, section_id, file_path,
             assigned_user_id if assigned_user_id else None,
             assigned_group_id if assigned_group_id else None,
-            notes, user_id, priority
+            notes, user_id, priority, DEFAULT_STATUS
         ))
 
         task_id = cur.lastrowid  # Get the ID of the newly created task
@@ -634,16 +719,9 @@ def complete_task(task_id):
     # Update task status to "Completed"
     cur.execute("UPDATE tasks SET status = 'Completed' WHERE id = %s", [task_id])
     mysql.connection.commit()
-
-    # Notify the assigned user, or every member of the assigned group
-    cur.execute("SELECT assigned_user_id, assigned_group_id FROM tasks WHERE id = %s", [task_id])
-    assigned_user_id, assigned_group_id = cur.fetchone()
     cur.close()
 
-    if assigned_user_id:
-        notify_task_status_change(task_id, assigned_user_id, "Completed")
-    elif assigned_group_id:
-        notify_group(task_id, assigned_group_id, f"Your group's task (ID: {task_id}) has been marked as Completed.")
+    notify_task_status_change(task_id, 'Completed')
 
     return redirect(request.referrer or url_for('index'))
 
@@ -691,7 +769,7 @@ def edit_task(task_id):
         title = request.form['title']
         description = request.form['description']
         task_date = request.form['task_date']
-        status = request.form['status'] if request.form.get('status') in ('Pending', 'Completed') else task[4]
+        status = request.form['status'] if request.form.get('status') in STATUSES else task[4]
         priority = clean_priority(request.form.get('priority'))
 
         # The assignee is sent as "user:<id>" or "group:<id>"
@@ -714,12 +792,14 @@ def edit_task(task_id):
         mysql.connection.commit()
         cur.close()
 
-        # Notify whoever the task was reassigned to
+        # Notify whoever the task was reassigned to, or the assignees if only the status changed
         if assigned_user_id and assigned_user_id != task[3]:
             notify_task_assignment(task_id, assigned_user_id, priority)
         elif assigned_group_id and assigned_group_id != task[6]:
             notify_group(task_id, assigned_group_id,
                          f"A {priority} priority task (ID: {task_id}) has been assigned to your group.")
+        elif status != task[4]:
+            notify_task_status_change(task_id, status)
 
         flash("Task updated successfully!")
         return redirect(url_for('index'))
@@ -1180,7 +1260,7 @@ def edit_section(section_id):
     return render_template('edit_section.html', section=section, branches=branches)
 
 ###Reports Route####
-REPORT_FILTERS = ['start_date', 'end_date', 'username', 'company_id', 'branch_id', 'section_id', 'priority']
+REPORT_FILTERS = ['start_date', 'end_date', 'username', 'company_id', 'branch_id', 'section_id', 'priority', 'status']
 REPORT_COLUMNS = ['Task ID', 'Title', 'Description', 'Task Date', 'Status', 'Notes', 'File Path',
                   'Assigned To', 'Email', 'Company', 'Branch', 'Section', 'Priority']
 
@@ -1221,6 +1301,9 @@ def fetch_report_tasks(filters):
     if filters.get('priority') in PRIORITIES:
         query += " AND tasks.priority = %s"
         params.append(filters['priority'])
+    if filters.get('status') in STATUSES:
+        query += " AND tasks.status = %s"
+        params.append(filters['status'])
 
     query += f" ORDER BY tasks.task_date, {PRIORITY_ORDER_SQL}"
 

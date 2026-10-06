@@ -76,6 +76,7 @@
 
     <script>
         const priorityColors = {{ priority_colors | tojson }};
+        const statusColors = {{ status_colors | tojson }};
 
         function priorityBadge(priority) {
             return `<span class="badge bg-${priorityColors[priority] || 'secondary'}">${escapeHtml(priority)}</span>`;
@@ -105,7 +106,7 @@
                                 <td>${escapeHtml(task.title)}</td>
                                 <td>${escapeHtml(task.description)}</td>
                                 <td>${priorityBadge(task.priority)}</td>
-                                <td>${task.status === 'Completed' ? '<span class="badge bg-success">Completed</span>' : '<span class="badge bg-warning text-dark">Pending</span>'}</td>
+                                <td><span class="badge bg-${statusColors[task.status] || 'secondary'}">${escapeHtml(task.status)}</span></td>
                                 <td>${escapeHtml(task.task_date)}</td>
                                 <td>${escapeHtml(task.assigned_to)}</td>
                                 <td>
@@ -113,7 +114,7 @@
                                         <button class="btn btn-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}'>Actions</button>
                                         <ul class="dropdown-menu">
                                             <li><a class="dropdown-item" href="/edit_task/${task.id}">Edit</a></li>
-                                            ${task.status === 'Pending' ? `
+                                            ${task.status !== 'Completed' ? `
                                             <li>
                                                 <form action="/complete_task/${task.id}" method="POST">
                                                     <button type="submit" class="dropdown-item">Mark as Completed</button>

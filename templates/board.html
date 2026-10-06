@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}Task Board{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <h1 class="mb-0">Task Board</h1>
+    <div class="d-flex align-items-center gap-2">
+        <form method="GET" action="{{ url_for('board') }}" class="d-flex align-items-center gap-2">
+            <label for="priority-filter" class="form-label mb-0">Priority</label>
+            <select id="priority-filter" name="priority" class="form-select form-select-sm" style="width: auto;" onchange="this.form.submit()">
+                <option value="">All</option>
+                {% for p in priorities %}
+                    <option value="{{ p }}" {% if p == selected_priority %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+            </select>
+        </form>
+        <a href="{{ url_for('add_task') }}" class="btn btn-success btn-sm">Add New Task</a>
+    </div>
+</div>
+
+<div id="board-error" class="alert alert-danger" style="display:none;" role="alert"></div>
+
+<div class="kanban-board">
+    {% for status, tasks in columns.items() %}
+    <div class="kanban-column">
+        <div class="kanban-column-header border-{{ status_colors[status] }}">
+            <span class="fw-semibold">{{ status }}</span>
+            <span class="badge bg-{{ status_colors[status] }}" data-count-for="{{ status }}">{{ tasks|length }}</span>
+        </div>
+        <div class="kanban-cards" data-status="{{ status }}">
+            {% for task in tasks %}
+            {% set overdue = task[3] and task[3] < today and status != 'Completed' %}
+            <div class="kanban-card" data-task-id="{{ task[0] }}">
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                    <a href="{{ url_for('edit_task', task_id=task[0]) }}" class="kanban-card-title">{{ task[1] }}</a>
+                    <span class="badge bg-{{ priority_colors.get(task[5], 'secondary') }}">{{ task[5] }}</span>
+                </div>
+                <div class="kanban-card-meta">
+                    {% if task[3] %}
+                    <span class="{{ 'text-danger fw-semibold' if overdue else '' }}" title="{{ 'Overdue' if overdue else 'Task date' }}">
+                        <i class="far fa-calendar"></i> {{ task[3] }}
+                    </span>
+                    {% endif %}
+                    {% if task[4] %}
+                    <span><i class="far fa-user"></i> {{ task[4] }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script>
+    const errorBox = document.getElementById('board-error');
+
+    function updateCounts() {
+        document.querySelectorAll('.kanban-cards').forEach(column => {
+            document.querySelector(`[data-count-for="${column.dataset.status}"]`).textContent = column.children.length;
+        });
+    }
+
+    function showError(message) {
+        errorBox.textContent = message;
+        errorBox.style.display = 'block';
+    }
+
+    // Cards can be dragged between columns; dropping a card saves its new status
+    document.querySelectorAll('.kanban-cards').forEach(column => {
+        new Sortable(column, {
+            group: 'tasks',
+            sort: false,               // Cards stay ordered by priority within a column
+            animation: 150,
+            forceFallback: true,       // Same pointer-based dragging for mouse and touch
+            ghostClass: 'kanban-card-ghost',
+            onAdd: function (evt) {
+                const card = evt.item;
+                const newStatus = evt.to.dataset.status;
+                updateCounts();
+                errorBox.style.display = 'none';
+
+                fetch(`/update_task_status/${card.dataset.taskId}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({status: newStatus})
+                })
+                    .then(response => {
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    })
+                    .catch(error => {
+                        // Put the card back where it was if the change wasn't saved
+                        console.error('Error updating task status:', error);
+                        evt.from.insertBefore(card, evt.from.children[evt.oldIndex] || null);
+                        updateCounts();
+                        showError("Couldn't move the task. Please try again.");
+                    });
+            }
+        });
+    });
+</script>
+
+<style>
+    .kanban-board {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+        align-items: start;
+    }
+
+    @media (max-width: 991px) {
+        .kanban-board {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (max-width: 575px) {
+        .kanban-board {
+            grid-template-columns: minmax(0, 1fr);
+        }
+    }
+
+    .kanban-column {
+        background-color: #f1f3f5;
+        border-radius: 10px;
+        padding: 12px;
+    }
+
+    .kanban-column-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 8px;
+        margin-bottom: 10px;
+        border-bottom: 3px solid;
+    }
+
+    .kanban-cards {
+        min-height: 80px;  /* Lets cards be dropped into an empty column */
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .kanban-card {
+        background-color: #ffffff;
+        border-radius: 8px;
+        padding: 10px 12px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+        cursor: grab;
+    }
+
+    .kanban-card:active {
+        cursor: grabbing;
+    }
+
+    .kanban-card-title {
+        color: inherit;
+        text-decoration: none;
+        font-weight: 500;
+        overflow-wrap: anywhere;
+    }
+
+    .kanban-card-title:hover {
+        text-decoration: underline;
+    }
+
+    .kanban-card-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 12px;
+        margin-top: 6px;
+        font-size: 0.85rem;
+        color: #6c757d;
+    }
+
+    .kanban-card-ghost {
+        opacity: 0.4;
+    }
+</style>
+{% endblock %}

@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     id INT AUTO_INCREMENT PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     description TEXT,
-    status VARCHAR(20) NOT NULL DEFAULT 'Pending',
+    status VARCHAR(20) NOT NULL DEFAULT 'To Do',  -- 'To Do', 'In Progress', 'In Review' or 'Completed'
     priority ENUM('Urgent', 'High', 'Medium', 'Low') NOT NULL DEFAULT 'Medium',
     task_date DATE,
     notes TEXT,

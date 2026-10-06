@@ -73,6 +73,17 @@
             </select>
         </div>
 
+        <!-- Status Filter -->
+        <div class="col-md-4">
+            <label for="status" class="form-label">Status</label>
+            <select class="form-select" name="status" id="status">
+                <option value="">All Statuses</option>
+                {% for s in statuses %}
+                    <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
         <!-- Submit Button and Export Buttons -->
         <div class="col-md-12 mt-3 d-flex justify-content-between">
             <button type="submit" class="btn btn-primary">Generate Report</button>

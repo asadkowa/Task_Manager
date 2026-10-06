@@ -36,19 +36,15 @@
                 <td>{{ task[2] }}</td> <!-- Task Description -->
                 <td><span class="badge bg-{{ priority_colors.get(task[5], 'secondary') }}">{{ task[5] }}</span></td>
                 <td>
-                    {% if task[4] == 'Completed' %}
-                        <span class="badge bg-success">Completed</span>
-                    {% else %}
-                        <span class="badge bg-warning text-dark">Pending</span>
-                    {% endif %}
+                    <span class="badge bg-{{ status_colors.get(task[4], 'secondary') }}">{{ task[4] }}</span>
                 </td>
                 <td>{{ task[3] }}</td> <!-- Task Date -->
                 <td>
                     <!-- Edit Task Button -->
                     <a href="{{ url_for('edit_task', task_id=task[0]) }}" class="btn btn-secondary btn-sm">Edit</a>
 
-                    <!-- Mark as Completed Button (only if Pending) -->
-                    {% if task[4] == 'Pending' %}
+                    <!-- Mark as Completed Button (only if not completed yet) -->
+                    {% if task[4] != 'Completed' %}
                         <form action="{{ url_for('complete_task', task_id=task[0]) }}" method="POST" style="display: inline;">
                             <button type="submit" class="btn btn-primary btn-sm">Mark as Completed</button>
                         </form>
